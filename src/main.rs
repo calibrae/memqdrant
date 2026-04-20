@@ -2,6 +2,7 @@ mod embed;
 mod mcp;
 mod qdrant;
 mod schema;
+mod util;
 mod wal;
 
 use anyhow::Result;

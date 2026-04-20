@@ -13,6 +13,7 @@ use serde_json::json;
 use crate::embed::Embedder;
 use crate::qdrant::{FindFilter, Qdrant};
 use crate::schema::{Category, Hall, Memory, Payload, Wing};
+use crate::util::now_rfc3339;
 use crate::wal::Wal;
 
 const DUPLICATE_THRESHOLD: f32 = 0.95;
@@ -27,6 +28,9 @@ pub struct Palace {
     embedder: Arc<Embedder>,
     qdrant: Arc<Qdrant>,
     wal: Arc<Wal>,
+    // `tool_router` is read via the derived `Clone` impl and by the `#[tool_router]` macro,
+    // but clippy can't see that — silence the warning.
+    #[allow(dead_code)]
     tool_router: ToolRouter<Palace>,
 }
 
@@ -156,7 +160,11 @@ impl Palace {
         description = "Palace status: total point count plus breakdown by wing and by hall. Useful for agents orienting themselves before searching."
     )]
     async fn palace_status(&self) -> Result<CallToolResult, McpError> {
-        let total = self.qdrant.count(&FindFilter::default()).await.map_err(err)?;
+        let total = self
+            .qdrant
+            .count(&FindFilter::default())
+            .await
+            .map_err(err)?;
         let wings = self.qdrant.facet("wing").await.map_err(err)?;
         let halls = self.qdrant.facet("hall").await.map_err(err)?;
         let categories = self.qdrant.facet("category").await.map_err(err)?;
@@ -167,7 +175,9 @@ impl Palace {
             "halls": facet_map(&halls),
             "categories": facet_map(&categories),
         });
-        Ok(CallToolResult::success(vec![Content::text(body.to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
     }
 
     #[tool(
@@ -184,7 +194,9 @@ impl Palace {
             "halls": facet_map(&halls),
             "categories": facet_map(&categories),
         });
-        Ok(CallToolResult::success(vec![Content::text(body.to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
     }
 
     #[tool(
@@ -211,7 +223,9 @@ impl Palace {
             "threshold": DUPLICATE_THRESHOLD,
             "closest": top,
         });
-        Ok(CallToolResult::success(vec![Content::text(body.to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            body.to_string(),
+        )]))
     }
 }
 
@@ -234,20 +248,21 @@ impl Palace {
             .qdrant
             .search(vec.clone(), 1, &FindFilter::default())
             .await?;
-        if let Some(top) = existing.first() {
-            if top.score.unwrap_or(0.0) >= DUPLICATE_THRESHOLD && top.text == args.text {
-                tracing::info!(id = top.id, "skipping store — exact duplicate");
-                return Ok(StoreResult {
-                    id: top.id,
-                    duplicate_of: Some(top.id),
-                    score: top.score,
-                    text: top.text.clone(),
-                    wing: top.wing.clone(),
-                    room: top.room.clone(),
-                    hall: top.hall.clone(),
-                    timestamp: top.timestamp.clone(),
-                });
-            }
+        if let Some(top) = existing.first()
+            && top.score.unwrap_or(0.0) >= DUPLICATE_THRESHOLD
+            && top.text == args.text
+        {
+            tracing::info!(id = top.id, "skipping store — exact duplicate");
+            return Ok(StoreResult {
+                id: top.id,
+                duplicate_of: Some(top.id),
+                score: top.score,
+                text: top.text.clone(),
+                wing: top.wing.clone(),
+                room: top.room.clone(),
+                hall: top.hall.clone(),
+                timestamp: top.timestamp.clone(),
+            });
         }
 
         let id = new_id();
@@ -292,7 +307,11 @@ impl Palace {
 
     async fn do_find(&self, args: FindArgs) -> anyhow::Result<Vec<Memory>> {
         if args.query.len() > MAX_TEXT_BYTES {
-            anyhow::bail!("query too large: {} bytes (max {})", args.query.len(), MAX_TEXT_BYTES);
+            anyhow::bail!(
+                "query too large: {} bytes (max {})",
+                args.query.len(),
+                MAX_TEXT_BYTES
+            );
         }
         let limit = args.limit.unwrap_or(5).clamp(1, 20);
         let filter = FindFilter {
@@ -330,33 +349,6 @@ fn new_id() -> u64 {
         .map(|d| d.as_millis())
         .unwrap_or(0) as u64;
     millis.max(1_000_000_000)
-}
-
-fn now_rfc3339() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format_rfc3339(secs)
-}
-
-fn format_rfc3339(mut secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
-    secs %= 86_400;
-    let hour = (secs / 3600) as u32;
-    let minute = ((secs / 60) % 60) as u32;
-    let second = (secs % 60) as u32;
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
-    let year = (y + if m <= 2 { 1 } else { 0 }) as i64;
-    format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
 fn facet_map(items: &[(String, u64)]) -> serde_json::Value {

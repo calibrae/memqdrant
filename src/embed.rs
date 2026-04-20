@@ -42,10 +42,6 @@ impl Embedder {
         }
     }
 
-    pub fn model(&self) -> &str {
-        &self.model
-    }
-
     /// Embed a single string. Tries `/api/embed` (Ollama ≥0.1.33) first,
     /// falls back to legacy `/api/embeddings` on 404.
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>> {

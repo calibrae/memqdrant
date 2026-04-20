@@ -91,10 +91,7 @@ impl Qdrant {
     }
 
     fn url(&self, path: &str) -> String {
-        format!(
-            "{}/collections/{}{}",
-            self.base_url, self.collection, path
-        )
+        format!("{}/collections/{}{}", self.base_url, self.collection, path)
     }
 
     pub async fn upsert(&self, id: u64, vector: Vec<f32>, payload: Payload) -> Result<()> {
@@ -148,7 +145,11 @@ impl Qdrant {
             .json()
             .await
             .context("qdrant search decode")?;
-        Ok(resp.result.into_iter().filter_map(to_memory_scored).collect())
+        Ok(resp
+            .result
+            .into_iter()
+            .filter_map(to_memory_scored)
+            .collect())
     }
 
     pub async fn retrieve(&self, ids: Vec<u64>) -> Result<Vec<Memory>> {
@@ -172,7 +173,11 @@ impl Qdrant {
             .json()
             .await
             .context("qdrant retrieve decode")?;
-        Ok(resp.result.into_iter().filter_map(to_memory_plain).collect())
+        Ok(resp
+            .result
+            .into_iter()
+            .filter_map(to_memory_plain)
+            .collect())
     }
 
     pub async fn count(&self, filter: &FindFilter) -> Result<u64> {
@@ -193,7 +198,11 @@ impl Qdrant {
             .json()
             .await
             .context("qdrant count decode")?;
-        Ok(resp.result.get("count").and_then(Value::as_u64).unwrap_or(0))
+        Ok(resp
+            .result
+            .get("count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0))
     }
 
     /// Facet a single key. Returns (value, count) pairs.
@@ -232,29 +241,6 @@ impl Qdrant {
         Ok(out)
     }
 
-    /// Ensure the collection exists with the expected dim + cosine distance.
-    /// No-op if it's already there.
-    pub async fn ensure_collection(&self, dim: u32) -> Result<()> {
-        let url = format!("{}/collections/{}", self.base_url, self.collection);
-        let exists = self.client.get(&url).send().await?.status().is_success();
-        if exists {
-            return Ok(());
-        }
-        let body = json!({
-            "vectors": { "size": dim, "distance": "Cosine" }
-        });
-        let resp = self.client.put(&url).json(&body).send().await?;
-        if !resp.status().is_success() {
-            return Err(anyhow!(
-                "create collection {}: {} {}",
-                self.collection,
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            ));
-        }
-        Ok(())
-    }
-
     /// Ensure keyword indexes exist on wing, category, room, hall. Idempotent —
     /// Qdrant accepts re-creation as no-op. Required for the facet API.
     pub async fn ensure_indexes(&self) -> Result<()> {
@@ -265,17 +251,9 @@ impl Qdrant {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = resp.text().await.unwrap_or_default();
-                // Qdrant returns 200 on already-exists; any other non-2xx is a real error.
                 return Err(anyhow!("index {field}: {status} {text}"));
             }
         }
-        Ok(())
-    }
-
-    /// Drop the collection. Used by tests against throwaway collections — never call this on prod.
-    pub async fn drop_collection(&self) -> Result<()> {
-        let url = format!("{}/collections/{}", self.base_url, self.collection);
-        self.client.delete(&url).send().await?.error_for_status()?;
         Ok(())
     }
 }
