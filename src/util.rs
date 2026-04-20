@@ -58,8 +58,8 @@ pub fn parse_rfc3339(s: &str) -> Option<i64> {
     // Howard Hinnant's days_from_civil — inverse of the civil-from-days in format_rfc3339.
     let y = y - if m <= 2 { 1 } else { 0 };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64;
-    let mi_shift = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let yoe = y - era * 400;
+    let mi_shift = i64::from(if m > 2 { m - 3 } else { m + 9 });
     let doy = (153 * mi_shift + 2) / 5 + d as i64 - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
