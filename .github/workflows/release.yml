@@ -25,6 +25,9 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
@@ -45,7 +48,7 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross (linux arm64)
+      - name: Install cross (Linux cross-builds)
         if: matrix.cross
         run: cargo install --locked cross
 

@@ -1,0 +1,37 @@
+[Unit]
+Description=memqdrant — Qdrant memory palace MCP server (Streamable HTTP)
+Documentation=https://github.com/calibrae/memqdrant
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=memqdrant
+Group=memqdrant
+ExecStart=/opt/memqdrant/bin/memqdrant serve --bind 0.0.0.0:6334
+Restart=on-failure
+RestartSec=5
+
+# memqdrant reads Qdrant/Ollama URLs from env; override in /etc/memqdrant/env
+EnvironmentFile=-/etc/memqdrant/env
+Environment=RUST_LOG=memqdrant=info
+
+# Hardening — memqdrant only needs outbound HTTP to Qdrant/Ollama and writes WAL.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/memqdrant
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

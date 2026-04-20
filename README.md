@@ -8,7 +8,7 @@ Cali's Rust daemon. Stdio only. No web UI, no auth, no drama.
 
 A single-binary Rust MCP server that:
 
-- Speaks MCP over stdio (drop it into Claude Code, Cursor, or any MCP-compatible client)
+- Speaks MCP over **stdio** (run locally) or **Streamable HTTP** (run as a service)
 - Embeds text with [Ollama](https://ollama.com/) (`nomic-embed-text` by default, 768-dim)
 - Stores and retrieves points in [Qdrant](https://qdrant.tech/) with a **structured palace schema** (wing → room → hall)
 - Detects near-duplicates before writing (cosine ≥ 0.95 + exact text match)
@@ -64,6 +64,7 @@ All via environment variables:
 | `QDRANT_URL` | `http://localhost:6333` |
 | `COLLECTION` | `claude-memory` |
 | `MEMQDRANT_WAL` | `~/.memqdrant/wal.jsonl` |
+| `MEMQDRANT_BIND` | `127.0.0.1:6334` (only used by `serve`) |
 | `RUST_LOG` | `memqdrant=info` |
 
 Logging goes to **stderr only**. Stdout is the MCP transport — anything written there corrupts the JSON-RPC stream.
@@ -78,14 +79,26 @@ cargo build --release
 
 Release profile is LTO-thin, single codegen unit, stripped. Current binary weighs in around 3.5 MB.
 
-## Register with Claude Code
+## Running
+
+memqdrant speaks two transports; pick one.
+
+### stdio (local)
+
+```
+memqdrant
+```
+
+Stdout is the MCP channel — logging always goes to stderr. This is the default mode when the binary is invoked with no arguments. Best for single-user laptop use: no port to bind, no service to manage.
+
+Register with Claude Code:
 
 ```
 claude mcp add memqdrant -- /path/to/target/release/memqdrant
 claude mcp list
 ```
 
-Override any env var with `-e KEY=VALUE` before the `--`. Example:
+Override env vars with `-e KEY=VALUE` before the `--`:
 
 ```
 claude mcp add memqdrant \
@@ -93,6 +106,37 @@ claude mcp add memqdrant \
   -e OLLAMA_URL=http://localhost:11434 \
   -- /path/to/target/release/memqdrant
 ```
+
+### Streamable HTTP (service)
+
+```
+memqdrant serve --bind 0.0.0.0:6334
+```
+
+Serves MCP over Streamable HTTP at `POST /mcp`. Useful when the binary lives on a server co-located with Qdrant + Ollama, and your laptop (or multiple clients) connect over the network.
+
+Register with Claude Code as a remote server:
+
+```
+claude mcp add --transport http memqdrant http://your-server:6334/mcp
+```
+
+Bind address can also be set via `MEMQDRANT_BIND`. Default is `127.0.0.1:6334`.
+
+#### Deploy as a systemd service
+
+The `deploy/` directory contains a hardened systemd unit, an env-file template, and an installer. On Debian / Ubuntu / any systemd host:
+
+```
+# On the target host, after placing the binary at e.g. ~/memqdrant
+sudo ./deploy/install.sh ~/memqdrant
+# Review /etc/memqdrant/env, then:
+sudo systemctl enable --now memqdrant
+```
+
+The unit runs as a dedicated `memqdrant` user, drops all needless privileges (`ProtectSystem=strict`, `MemoryDenyWriteExecute=true`, `RestrictNamespaces=true`, etc.), and persists the WAL at `/var/lib/memqdrant/wal.jsonl`.
+
+If you expose the service beyond a trusted LAN, put a reverse proxy with TLS + auth (e.g. nginx + basic auth, or an identity-aware proxy) in front of `:6334`. There is no built-in authentication — memqdrant assumes a trusted network.
 
 ## Testing
 
