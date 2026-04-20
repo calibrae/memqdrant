@@ -28,13 +28,20 @@ Neither upstream is vendored. Both are linked above; please follow and star thei
 | Tool | What it does |
 |---|---|
 | `palace_store` | File a verbatim memory into a wing/room/hall. Returns a new point ID or the existing one on near-duplicate. |
-| `palace_find` | Semantic search. Optional typed filters: `wing`, `category`, `room`, `hall`. |
+| `palace_find` | Semantic search. Optional typed filters: `wing`, `category`, `room`, `hall`, `since`, `until`, `recency_half_life_days`. |
 | `palace_recall` | Fetch by explicit IDs. Cheap — no embedding. |
 | `palace_status` | Total point count plus facet breakdown by wing, hall, category. |
 | `palace_taxonomy` | Flat facet dump of wing / room / hall / category counts. |
 | `palace_check_duplicate` | Probe whether candidate text already exists above the 0.95 cosine threshold. |
 
 Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per find.
+
+### Temporal filtering on `palace_find`
+
+- `since` / `until` — inclusive RFC3339 second-precision UTC timestamps (e.g. `2026-04-01T00:00:00Z`). Filter memories by when they were stored. Bad format is rejected with an explicit error.
+- `recency_half_life_days` (f64) — opt-in recency bias. When set, memqdrant fetches up to 4× the requested limit from Qdrant (capped at 80), re-ranks each hit by `score × exp(-age_days / half_life)`, then returns the top `limit`. Omit or pass `0` for pure cosine. Typical values: `30` (aggressive), `90` (moderate), `365` (gentle — a year-old memory gets half its raw score).
+
+Both knobs work alongside the wing/category/room/hall filters — they compose.
 
 ## Palace schema
 
