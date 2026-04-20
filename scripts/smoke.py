@@ -1,0 +1,230 @@
+#!/usr/bin/env python3
+"""End-to-end smoke test for memqdrant against a throwaway Qdrant collection.
+
+Spins up the binary with COLLECTION=memqdrant-test, speaks MCP JSON-RPC over
+stdio, round-trips store/find/recall/status/check_duplicate, then drops the
+collection. Fails loudly on any non-200 / non-match.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+import urllib.error
+
+QDRANT = os.environ.get("QDRANT_URL", "http://localhost:6333")
+OLLAMA = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+COLLECTION = "memqdrant-test"
+BIN = os.path.join(os.path.dirname(__file__), "..", "target", "release", "memqdrant")
+
+
+def http(method, url, body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def create_collection():
+    status, _ = http("DELETE", f"{QDRANT}/collections/{COLLECTION}")
+    status, body = http(
+        "PUT",
+        f"{QDRANT}/collections/{COLLECTION}",
+        {"vectors": {"size": 768, "distance": "Cosine"}},
+    )
+    assert status == 200, f"create: {status} {body}"
+    print(f"created {COLLECTION}")
+
+
+def drop_collection():
+    http("DELETE", f"{QDRANT}/collections/{COLLECTION}")
+    print(f"dropped {COLLECTION}")
+
+
+class MCPClient:
+    def __init__(self, proc):
+        self.proc = proc
+        self._id = 0
+
+    def _send(self, method, params=None):
+        self._id += 1
+        msg = {"jsonrpc": "2.0", "id": self._id, "method": method}
+        if params is not None:
+            msg["params"] = params
+        line = json.dumps(msg) + "\n"
+        self.proc.stdin.write(line.encode())
+        self.proc.stdin.flush()
+        resp_line = self.proc.stdout.readline()
+        if not resp_line:
+            stderr = self.proc.stderr.read().decode(errors="replace")
+            raise RuntimeError(f"no response to {method}. stderr:\n{stderr}")
+        return json.loads(resp_line)
+
+    def _notify(self, method, params=None):
+        msg = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            msg["params"] = params
+        line = json.dumps(msg) + "\n"
+        self.proc.stdin.write(line.encode())
+        self.proc.stdin.flush()
+
+    def initialize(self):
+        r = self._send(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "memqdrant-smoke", "version": "0.1"},
+            },
+        )
+        assert "result" in r, f"initialize: {r}"
+        self._notify("notifications/initialized")
+        return r["result"]
+
+    def list_tools(self):
+        r = self._send("tools/list")
+        return r["result"]["tools"]
+
+    def call(self, name, args):
+        r = self._send("tools/call", {"name": name, "arguments": args})
+        assert "result" in r, f"{name} failed: {r}"
+        content = r["result"]["content"]
+        assert content and content[0]["type"] == "text", f"{name}: bad content {content}"
+        return json.loads(content[0]["text"])
+
+
+def main():
+    if not os.path.isfile(BIN):
+        sys.exit(f"binary not found: {BIN}. Run `cargo build --release` first.")
+
+    create_collection()
+
+    env = os.environ.copy()
+    env["COLLECTION"] = COLLECTION
+    env["QDRANT_URL"] = QDRANT
+    env["OLLAMA_URL"] = OLLAMA
+    env["RUST_LOG"] = "memqdrant=info"
+
+    proc = subprocess.Popen(
+        [BIN],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        client = MCPClient(proc)
+        info = client.initialize()
+        print("initialized:", info.get("serverInfo"))
+
+        tools = client.list_tools()
+        names = sorted(t["name"] for t in tools)
+        print("tools:", names)
+        expected = {
+            "palace_store",
+            "palace_find",
+            "palace_recall",
+            "palace_status",
+            "palace_taxonomy",
+            "palace_check_duplicate",
+        }
+        assert expected.issubset(set(names)), f"missing tools. got {names}"
+
+        # 1. Store a memory
+        stored = client.call(
+            "palace_store",
+            {
+                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly.",
+                "category": "project-memory",
+                "wing": "projects",
+                "room": "memqdrant",
+                "hall": "events",
+                "session": "smoke-test",
+            },
+        )
+        print("stored:", stored)
+        new_id = stored["id"]
+        assert new_id >= 1_000_000_000, f"id below floor: {new_id}"
+
+        # 2. Find it back
+        hits = client.call("palace_find", {"query": "smoke test mcp round trip", "limit": 3})
+        print("found:", [(h["id"], round(h["score"], 3)) for h in hits])
+        assert any(h["id"] == new_id for h in hits), "stored memory not retrievable"
+
+        # 3. Recall by ID
+        recalled = client.call("palace_recall", {"ids": [new_id]})
+        assert len(recalled) == 1 and recalled[0]["id"] == new_id, f"recall: {recalled}"
+        assert recalled[0]["text"].startswith("memqdrant smoke test")
+        print("recalled ok")
+
+        # 4. Status
+        status = client.call("palace_status", {})
+        print("status:", status)
+        assert status["total"] >= 1
+
+        # 5. Check duplicate (exact match -> should flag)
+        dup = client.call(
+            "palace_check_duplicate",
+            {
+                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly."
+            },
+        )
+        print("dup check:", dup)
+        assert dup["is_duplicate"], "exact duplicate not detected"
+
+        # 6. Store the exact same text -> should return existing id
+        stored_again = client.call(
+            "palace_store",
+            {
+                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly.",
+                "category": "project-memory",
+                "wing": "projects",
+                "room": "memqdrant",
+                "hall": "events",
+            },
+        )
+        print("stored again:", stored_again)
+        assert stored_again["id"] == new_id, "duplicate store should return existing id"
+        assert stored_again["duplicate_of"] == new_id
+
+        # 7. Filter: wing=projects room=memqdrant
+        filtered = client.call(
+            "palace_find",
+            {
+                "query": "smoke test",
+                "wing": "projects",
+                "room": "memqdrant",
+                "hall": "events",
+                "limit": 5,
+            },
+        )
+        assert any(h["id"] == new_id for h in filtered), "filter miss"
+        print("filtered ok")
+
+        print("\n✅ all smoke checks passed")
+    finally:
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        stderr = proc.stderr.read().decode(errors="replace")
+        if stderr.strip():
+            print("\n--- server stderr ---")
+            print(stderr)
+        drop_collection()
+
+
+if __name__ == "__main__":
+    main()
