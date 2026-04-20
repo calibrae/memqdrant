@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=memqdrant
 Group=memqdrant
-ExecStart=/opt/memqdrant/bin/memqdrant serve --bind 0.0.0.0:6334
+ExecStart=/opt/memqdrant/bin/memqdrant serve
 Restart=on-failure
 RestartSec=5
 

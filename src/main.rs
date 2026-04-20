@@ -72,6 +72,7 @@ Environment:
   COLLECTION    (default claude-memory)
   MEMQDRANT_WAL (default ~/.memqdrant/wal.jsonl)
   MEMQDRANT_BIND (default 127.0.0.1:6334 in serve mode)
+  MEMQDRANT_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
   RUST_LOG      (default memqdrant=info)
 ",
         env!("CARGO_PKG_VERSION")
@@ -165,10 +166,34 @@ async fn run_http(rest: &[String]) -> Result<()> {
 
     let ct = CancellationToken::new();
     let ct_child = ct.child_token();
+    let mut http_config = StreamableHttpServerConfig::default().with_cancellation_token(ct_child);
+    match std::env::var("MEMQDRANT_ALLOWED_HOSTS") {
+        Ok(raw) if raw.trim() == "*" => {
+            tracing::warn!(
+                "MEMQDRANT_ALLOWED_HOSTS=* — DNS rebinding protection DISABLED. Ensure the listener is behind a trusted reverse proxy or firewall."
+            );
+            http_config = http_config.disable_allowed_hosts();
+        }
+        Ok(raw) => {
+            let hosts: Vec<String> = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            tracing::info!(?hosts, "Host header allowlist");
+            http_config = http_config.with_allowed_hosts(hosts);
+        }
+        Err(_) => {
+            tracing::info!(
+                "Host header allowlist defaults to localhost/127.0.0.1/::1 — set MEMQDRANT_ALLOWED_HOSTS to accept remote clients."
+            );
+        }
+    }
+
     let service = StreamableHttpService::new(
         move || Ok(cfg.make_palace()),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(ct_child),
+        http_config,
     );
 
     let router = axum::Router::new().nest_service("/mcp", service);
