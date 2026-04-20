@@ -17,11 +17,20 @@ pub struct FindFilter {
     pub category: Option<String>,
     pub room: Option<String>,
     pub hall: Option<String>,
+    /// Inclusive lower bound on `timestamp` (RFC3339).
+    pub since: Option<String>,
+    /// Inclusive upper bound on `timestamp` (RFC3339).
+    pub until: Option<String>,
 }
 
 impl FindFilter {
     fn is_empty(&self) -> bool {
-        self.wing.is_none() && self.category.is_none() && self.room.is_none() && self.hall.is_none()
+        self.wing.is_none()
+            && self.category.is_none()
+            && self.room.is_none()
+            && self.hall.is_none()
+            && self.since.is_none()
+            && self.until.is_none()
     }
 
     fn to_qdrant_filter(&self) -> Option<Value> {
@@ -39,6 +48,16 @@ impl FindFilter {
             if let Some(v) = val {
                 must.push(json!({"key": key, "match": {"value": v}}));
             }
+        }
+        if self.since.is_some() || self.until.is_some() {
+            let mut range = serde_json::Map::new();
+            if let Some(s) = &self.since {
+                range.insert("gte".into(), json!(s));
+            }
+            if let Some(u) = &self.until {
+                range.insert("lte".into(), json!(u));
+            }
+            must.push(json!({ "key": "timestamp", "range": range }));
         }
         Some(json!({ "must": must }))
     }
@@ -241,12 +260,20 @@ impl Qdrant {
         Ok(out)
     }
 
-    /// Ensure keyword indexes exist on wing, category, room, hall. Idempotent —
-    /// Qdrant accepts re-creation as no-op. Required for the facet API.
+    /// Ensure keyword indexes exist on wing, category, room, hall, plus a
+    /// datetime index on `timestamp` for since/until range queries. Idempotent —
+    /// Qdrant accepts re-creation as no-op.
     pub async fn ensure_indexes(&self) -> Result<()> {
         let url = self.url("/index?wait=true");
-        for field in ["wing", "category", "room", "hall"] {
-            let body = json!({ "field_name": field, "field_schema": "keyword" });
+        let fields: [(&str, &str); 5] = [
+            ("wing", "keyword"),
+            ("category", "keyword"),
+            ("room", "keyword"),
+            ("hall", "keyword"),
+            ("timestamp", "datetime"),
+        ];
+        for (field, schema) in fields {
+            let body = json!({ "field_name": field, "field_schema": schema });
             let resp = self.client.put(&url).json(&body).send().await?;
             if !resp.status().is_success() {
                 let status = resp.status();

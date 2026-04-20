@@ -82,6 +82,18 @@ pub struct FindArgs {
     pub room: Option<String>,
     #[serde(default)]
     pub hall: Option<Hall>,
+    /// Inclusive lower bound on memory timestamp (RFC3339 second-precision, e.g.
+    /// "2026-04-01T00:00:00Z"). Memories older than this are excluded.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Inclusive upper bound on memory timestamp (RFC3339 second-precision).
+    #[serde(default)]
+    pub until: Option<String>,
+    /// Optional recency boost: after top-N cosine retrieval, re-rank by
+    /// `score * exp(-age_days / half_life)`. Set to a positive number of days to
+    /// enable (e.g. 365 = year-long half-life). Omit or 0 for pure cosine.
+    #[serde(default)]
+    pub recency_half_life_days: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -122,7 +134,7 @@ impl Palace {
     }
 
     #[tool(
-        description = "Semantic search over the palace. Optional typed filters (wing/category/room/hall) narrow the search before vector comparison."
+        description = "Semantic search over the palace. Optional typed filters narrow the search before vector comparison: wing/category/room/hall for faceted filtering, since/until (RFC3339) for time-range filtering, recency_half_life_days to bias scores toward recent memories (e.g. 365 = year-long half-life)."
     )]
     async fn palace_find(
         &self,
@@ -313,15 +325,57 @@ impl Palace {
                 MAX_TEXT_BYTES
             );
         }
+        for (name, val) in [("since", &args.since), ("until", &args.until)] {
+            if let Some(s) = val
+                && crate::util::parse_rfc3339(s).is_none()
+            {
+                anyhow::bail!(
+                    "{name} must be RFC3339 second-precision UTC (e.g. 2026-04-20T00:00:00Z), got {s:?}"
+                );
+            }
+        }
         let limit = args.limit.unwrap_or(5).clamp(1, 20);
         let filter = FindFilter {
             wing: args.wing.map(|w| w.as_str().to_string()),
             category: args.category.map(|c| c.as_str().to_string()),
             room: args.room,
             hall: args.hall.map(|h| h.as_str().to_string()),
+            since: args.since,
+            until: args.until,
         };
         let vec = self.embedder.embed(&args.query).await?;
-        self.qdrant.search(vec, limit, &filter).await
+
+        let half_life = args.recency_half_life_days.filter(|h| *h > 0.0);
+        let fetch_limit = match half_life {
+            Some(_) => (limit.saturating_mul(4)).min(80),
+            None => limit,
+        };
+        let mut hits = self.qdrant.search(vec, fetch_limit, &filter).await?;
+
+        if let Some(hl) = half_life {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let half_life_secs = hl * 86_400.0;
+            for m in &mut hits {
+                let ts = crate::util::parse_rfc3339(&m.timestamp).unwrap_or(now_secs);
+                let age = (now_secs - ts).max(0) as f64;
+                let decay = (-age / half_life_secs).exp() as f32;
+                if let Some(s) = m.score.as_mut() {
+                    *s *= decay;
+                }
+            }
+            hits.sort_by(|a, b| {
+                b.score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+
+        hits.truncate(limit as usize);
+        Ok(hits)
     }
 }
 

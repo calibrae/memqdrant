@@ -28,9 +28,47 @@ pub fn format_rfc3339(mut secs: u64) -> String {
     format!("{year:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}Z")
 }
 
+/// Parse `YYYY-MM-DDTHH:MM:SSZ` into unix-epoch seconds. Accepts only the exact
+/// shape memqdrant itself produces (second-precision, Z-suffixed). Returns `None`
+/// on shape mismatch or out-of-range fields.
+pub fn parse_rfc3339(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 20
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b'T'
+        || b[13] != b':'
+        || b[16] != b':'
+        || b[19] != b'Z'
+    {
+        return None;
+    }
+    fn num(slice: &[u8]) -> Option<i64> {
+        std::str::from_utf8(slice).ok()?.parse().ok()
+    }
+    let y = num(&b[0..4])?;
+    let m = num(&b[5..7])? as u32;
+    let d = num(&b[8..10])? as u32;
+    let h = num(&b[11..13])? as u32;
+    let mi = num(&b[14..16])? as u32;
+    let se = num(&b[17..19])? as u32;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || h >= 24 || mi >= 60 || se >= 60 {
+        return None;
+    }
+    // Howard Hinnant's days_from_civil — inverse of the civil-from-days in format_rfc3339.
+    let y = y - if m <= 2 { 1 } else { 0 };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as i64;
+    let mi_shift = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mi_shift + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h as i64 * 3600 + mi as i64 * 60 + se as i64)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format_rfc3339;
+    use super::{format_rfc3339, parse_rfc3339};
 
     #[test]
     fn epoch_formats() {
@@ -47,5 +85,50 @@ mod tests {
     fn leap_day() {
         // 2024-02-29T12:34:56Z → 1709210096
         assert_eq!(format_rfc3339(1_709_210_096), "2024-02-29T12:34:56Z");
+    }
+
+    #[test]
+    fn roundtrip_epoch() {
+        assert_eq!(parse_rfc3339("1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn roundtrip_known_date() {
+        assert_eq!(parse_rfc3339("2026-04-20T08:37:19Z"), Some(1_776_674_239));
+    }
+
+    #[test]
+    fn roundtrip_leap_day() {
+        assert_eq!(parse_rfc3339("2024-02-29T12:34:56Z"), Some(1_709_210_096));
+    }
+
+    #[test]
+    fn roundtrip_many() {
+        for s in [
+            0_u64,
+            86_400,
+            1_000_000_000,
+            1_700_000_000,
+            1_776_674_239,
+            2_000_000_000,
+        ] {
+            let formatted = format_rfc3339(s);
+            let parsed = parse_rfc3339(&formatted).unwrap();
+            assert_eq!(parsed as u64, s, "roundtrip failed for {s} → {formatted}");
+        }
+    }
+
+    #[test]
+    fn bad_shape() {
+        assert!(parse_rfc3339("2026-04-20 08:37:19Z").is_none());
+        assert!(parse_rfc3339("2026-04-20T08:37:19+00:00").is_none());
+        assert!(parse_rfc3339("not a date").is_none());
+    }
+
+    #[test]
+    fn out_of_range() {
+        assert!(parse_rfc3339("2026-13-01T00:00:00Z").is_none());
+        assert!(parse_rfc3339("2026-04-32T00:00:00Z").is_none());
+        assert!(parse_rfc3339("2026-04-20T25:00:00Z").is_none());
     }
 }

@@ -212,6 +212,37 @@ def main():
         assert any(h["id"] == new_id for h in filtered), "filter miss"
         print("filtered ok")
 
+        # 8. since/until filter — future window should return nothing
+        future = client.call(
+            "palace_find",
+            {"query": "smoke test", "since": "2100-01-01T00:00:00Z", "limit": 5},
+        )
+        assert future == [], f"future window should be empty, got {future}"
+        # …and a since that includes our timestamp should still hit
+        included = client.call(
+            "palace_find",
+            {"query": "smoke test", "since": "2020-01-01T00:00:00Z", "limit": 5},
+        )
+        assert any(h["id"] == new_id for h in included), "since filter excluded stored memory"
+        print("since/until ok")
+
+        # 9. recency boost — should still return the hit, scores should change
+        boosted = client.call(
+            "palace_find",
+            {"query": "smoke test", "recency_half_life_days": 1, "limit": 5},
+        )
+        assert any(h["id"] == new_id for h in boosted), "recency boost dropped stored memory"
+        print("recency boost ok")
+
+        # 10. bad timestamp → error
+        try:
+            client.call("palace_find", {"query": "smoke", "since": "not-a-date"})
+        except AssertionError as e:
+            assert "RFC3339" in str(e), f"unexpected error: {e}"
+            print("bad timestamp rejected ok")
+        else:
+            raise AssertionError("bad since should have failed")
+
         print("\n✅ all smoke checks passed")
     finally:
         proc.stdin.close()
