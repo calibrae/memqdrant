@@ -3,3 +3,4 @@ CLAUDE.md
 resume.sh
 .memqdrant/
 .claude/
+.fastembed_cache/

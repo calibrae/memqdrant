@@ -18,20 +18,33 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.flavour }}-${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          # Ollama flavour (default) — one artifact per target.
+          - flavour: ollama
+            target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-          - target: x86_64-unknown-linux-musl
+          - flavour: ollama
+            target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
-          - target: aarch64-unknown-linux-gnu
+          - flavour: ollama
+            target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
-          - target: aarch64-apple-darwin
+          - flavour: ollama
+            target: aarch64-apple-darwin
+            os: macos-14
+          # Fastembed flavour — only the targets that sensibly host ONNX runtime.
+          # Linux musl is intentionally skipped (ort-sys prebuilts are glibc only).
+          - flavour: fastembed
+            target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - flavour: fastembed
+            target: aarch64-apple-darwin
             os: macos-14
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,18 +57,30 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.flavour }}-${{ matrix.target }}
 
       - name: Install cross (Linux cross-builds)
         if: matrix.cross
         run: cargo install --locked cross
 
+      - name: Cargo build flags
+        id: flags
+        shell: bash
+        run: |
+          if [ "${{ matrix.flavour }}" = "fastembed" ]; then
+            echo "args=--no-default-features --features fastembed" >> "$GITHUB_OUTPUT"
+            echo "suffix=-fastembed" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }}
+            cross build --release --locked --target ${{ matrix.target }} ${{ steps.flags.outputs.args }}
           else
-            cargo build --release --locked --target ${{ matrix.target }}
+            cargo build --release --locked --target ${{ matrix.target }} ${{ steps.flags.outputs.args }}
           fi
 
       - name: Package
@@ -63,7 +88,7 @@ jobs:
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
-          NAME="memqdrant-${TAG}-${{ matrix.target }}"
+          NAME="memqdrant${{ steps.flags.outputs.suffix }}-${TAG}-${{ matrix.target }}"
           mkdir -p "dist/${NAME}"
           cp "target/${{ matrix.target }}/release/memqdrant" "dist/${NAME}/"
           cp README.md LICENSE "dist/${NAME}/"
@@ -76,7 +101,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: memqdrant-${{ matrix.target }}
+          name: memqdrant${{ steps.flags.outputs.suffix }}-${{ matrix.target }}
           path: |
             ${{ steps.pkg.outputs.archive }}
             ${{ steps.pkg.outputs.sha256 }}

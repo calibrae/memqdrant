@@ -31,11 +31,17 @@ jobs:
       - name: fmt
         run: cargo fmt --all -- --check
 
-      - name: clippy
+      - name: clippy (ollama, default features)
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: build
+      - name: clippy (fastembed)
+        run: cargo clippy --all-targets --locked --no-default-features --features fastembed -- -D warnings
+
+      - name: build (ollama)
         run: cargo build --release --locked
+
+      - name: build (fastembed)
+        run: cargo build --release --locked --no-default-features --features fastembed
 
       - name: test
         run: cargo test --locked

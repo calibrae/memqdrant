@@ -5,6 +5,14 @@ mod schema;
 mod util;
 mod wal;
 
+#[cfg(all(feature = "ollama", feature = "fastembed"))]
+compile_error!(
+    "features `ollama` and `fastembed` are mutually exclusive — pick one with --features, and --no-default-features if you want fastembed."
+);
+
+#[cfg(not(any(feature = "ollama", feature = "fastembed")))]
+compile_error!("enable one of the embedding features: `ollama` (default) or `fastembed`.");
+
 use anyhow::{Context, Result};
 use rmcp::{
     ServiceExt,
@@ -28,7 +36,9 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 struct Config {
+    #[cfg(all(feature = "ollama", not(feature = "fastembed")))]
     ollama_url: String,
+    #[cfg(all(feature = "ollama", not(feature = "fastembed")))]
     ollama_model: String,
     qdrant_url: String,
     collection: String,
@@ -37,23 +47,41 @@ struct Config {
 impl Config {
     fn from_env() -> Self {
         Self {
+            #[cfg(all(feature = "ollama", not(feature = "fastembed")))]
             ollama_url: env_or("OLLAMA_URL", "http://localhost:11434"),
+            #[cfg(all(feature = "ollama", not(feature = "fastembed")))]
             ollama_model: env_or("OLLAMA_MODEL", "nomic-embed-text"),
             qdrant_url: env_or("QDRANT_URL", "http://localhost:6333"),
             collection: env_or("COLLECTION", "claude-memory"),
         }
     }
 
-    fn make_palace(&self) -> Palace {
-        let embedder = Embedder::new(&self.ollama_url, &self.ollama_model);
+    fn make_palace(&self) -> Result<Palace> {
+        let embedder = make_embedder(self)?;
         let qdrant = Qdrant::new(&self.qdrant_url, &self.collection);
         let wal = Wal::from_env();
-        Palace::new(embedder, qdrant, wal)
+        Ok(Palace::new(embedder, qdrant, wal))
     }
 
     fn make_qdrant(&self) -> Qdrant {
         Qdrant::new(&self.qdrant_url, &self.collection)
     }
+}
+
+const BACKEND: &str = if cfg!(feature = "fastembed") {
+    "fastembed:NomicEmbedTextV15"
+} else {
+    "ollama"
+};
+
+#[cfg(all(feature = "ollama", not(feature = "fastembed")))]
+fn make_embedder(cfg: &Config) -> Result<Embedder> {
+    Ok(Embedder::new(&cfg.ollama_url, &cfg.ollama_model))
+}
+
+#[cfg(feature = "fastembed")]
+fn make_embedder(_cfg: &Config) -> Result<Embedder> {
+    Embedder::new()
 }
 
 fn print_help() {
@@ -113,8 +141,7 @@ async fn main() -> Result<()> {
 async fn run_stdio() -> Result<()> {
     let cfg = Config::from_env();
     tracing::info!(
-        ollama = %cfg.ollama_url,
-        model = %cfg.ollama_model,
+        backend = BACKEND,
         qdrant = %cfg.qdrant_url,
         collection = %cfg.collection,
         mode = "stdio",
@@ -125,7 +152,7 @@ async fn run_stdio() -> Result<()> {
         tracing::warn!("ensure_indexes: {e:#}");
     }
 
-    let palace = cfg.make_palace();
+    let palace = cfg.make_palace()?;
     let service = palace.serve(stdio()).await.inspect_err(|e| {
         tracing::error!("mcp serve: {e:?}");
     })?;
@@ -151,8 +178,7 @@ async fn run_http(rest: &[String]) -> Result<()> {
 
     let cfg = Config::from_env();
     tracing::info!(
-        ollama = %cfg.ollama_url,
-        model = %cfg.ollama_model,
+        backend = BACKEND,
         qdrant = %cfg.qdrant_url,
         collection = %cfg.collection,
         bind = %bind,
@@ -191,7 +217,7 @@ async fn run_http(rest: &[String]) -> Result<()> {
     }
 
     let service = StreamableHttpService::new(
-        move || Ok(cfg.make_palace()),
+        move || cfg.make_palace().map_err(std::io::Error::other),
         LocalSessionManager::default().into(),
         http_config,
     );

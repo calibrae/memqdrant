@@ -78,13 +78,31 @@ Logging goes to **stderr only**. Stdout is the MCP transport — anything writte
 
 On startup, memqdrant creates keyword payload indexes on `wing`, `category`, `room`, `hall` if they're missing. Idempotent; required for the facet-based tools. Adding indexes to an existing collection is non-destructive — Qdrant builds them in place and existing points stay.
 
+## Embedding backends
+
+memqdrant ships two backends behind mutually-exclusive cargo features. Pick one at build time.
+
+| Feature | How it embeds | When to use |
+|---|---|---|
+| `ollama` (default) | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN (or localhost). Ops simplicity — no native deps, binary stays small. |
+| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5` via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want memqdrant self-contained with zero external services. Trade a larger binary (~28 MB) and a ~137 MB one-time model download for one less daemon to keep alive. |
+
+Select the variant via cargo features (release archives publish both per-platform):
+
+```
+cargo build --release                                          # ollama (default)
+cargo build --release --no-default-features --features fastembed
+```
+
+The two backends produce 768-dim vectors that are numerically *close but not bitwise identical* — Ollama uses GGUF FP16, fastembed uses ONNX. Existing points embedded with one backend remain retrievable with the other; expect minor recency/ranking drift on borderline queries.
+
 ## Build
 
 ```
 cargo build --release
 ```
 
-Release profile is LTO-thin, single codegen unit, stripped. Current binary weighs in around 3.5 MB.
+Release profile is LTO-thin, single codegen unit, stripped. Binary ~8 MB with the `ollama` backend, ~28 MB with `fastembed` (static ONNX runtime).
 
 ## Running
 
