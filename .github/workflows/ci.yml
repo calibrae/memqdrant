@@ -56,4 +56,6 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: Audit
-        run: cargo audit --deny warnings
+        # Ignored advisories (all informational "unmaintained", no security impact):
+        #   RUSTSEC-2024-0436 — paste 1.0.15, transitive via ort → fastembed.
+        run: cargo audit --deny warnings --ignore RUSTSEC-2024-0436
