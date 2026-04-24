@@ -243,6 +243,53 @@ def main():
         else:
             raise AssertionError("bad since should have failed")
 
+        # 11. palace_supersede replaces the stored point with a corrected version
+        superseded = client.call(
+            "palace_supersede",
+            {
+                "supersedes": [new_id],
+                "text": "memqdrant smoke test — corrected entry, v0.5 supersede path works.",
+                "category": "project-memory",
+                "wing": "projects",
+                "room": "memqdrant",
+                "hall": "events",
+                "session": "smoke-test",
+                "reason": "superseded by smoke test v0.5",
+            },
+        )
+        print("superseded:", superseded)
+        new_point_id = superseded["id"]
+        assert new_point_id != new_id, "supersede should mint a new id"
+        assert superseded["supersedes"] == [new_id]
+        assert superseded["marked"][0]["id"] == new_id
+        assert superseded["marked"][0]["ok"] is True
+
+        # 12. palace_find default excludes superseded points
+        after_supersede = client.call(
+            "palace_find",
+            {"query": "smoke test mcp round trip", "limit": 10},
+        )
+        ids_after = [h["id"] for h in after_supersede]
+        assert new_id not in ids_after, "default find should hide superseded point"
+        assert new_point_id in ids_after, "default find should surface the replacement"
+        print("default hides superseded ok")
+
+        # 13. palace_find with include_superseded=true surfaces history
+        with_superseded = client.call(
+            "palace_find",
+            {"query": "smoke test mcp round trip", "limit": 10, "include_superseded": True},
+        )
+        ids_with = [h["id"] for h in with_superseded]
+        assert new_id in ids_with, "include_superseded should surface the old point"
+        print("include_superseded surfaces history ok")
+
+        # 14. palace_recall exposes valid_until + superseded_by on the old point
+        recalled_old = client.call("palace_recall", {"ids": [new_id]})
+        assert recalled_old[0]["valid_until"] is not None, "old point missing valid_until"
+        assert recalled_old[0]["superseded_by"] == new_point_id
+        assert "superseded by smoke test v0.5" in recalled_old[0]["superseded_reason"]
+        print("recall exposes temporal metadata ok")
+
         print("\n✅ all smoke checks passed")
     finally:
         proc.stdin.close()

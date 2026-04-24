@@ -33,6 +33,7 @@ Neither upstream is vendored. Both are linked above; please follow and star thei
 | `palace_status` | Total point count plus facet breakdown by wing, hall, category. |
 | `palace_taxonomy` | Flat facet dump of wing / room / hall / category counts. |
 | `palace_check_duplicate` | Probe whether candidate text already exists above the 0.95 cosine threshold. |
+| `palace_supersede` | Replace one or more existing memories with a corrected version. Marks the old points with `valid_until`, `superseded_by`, `superseded_reason`; default `palace_find` hides them. |
 
 Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per find.
 
@@ -42,6 +43,17 @@ Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per fi
 - `recency_half_life_days` (f64) — opt-in recency bias. When set, memqdrant fetches up to 4× the requested limit from Qdrant (capped at 80), re-ranks each hit by `score × exp(-age_days / half_life)`, then returns the top `limit`. Omit or pass `0` for pure cosine. Typical values: `30` (aggressive), `90` (moderate), `365` (gentle — a year-old memory gets half its raw score).
 
 Both knobs work alongside the wing/category/room/hall filters — they compose.
+
+### Temporal validity (`palace_supersede`)
+
+Memories become wrong over time — infra gets renamed, services get rebuilt, decisions get reversed. `palace_supersede` lets you replace an old entry with a corrected one without losing the history:
+
+- The new text is embedded and stored as a fresh point with `supersedes: [<old_id>, ...]`.
+- Each old point gets marked with `valid_until = now`, `superseded_by = <new_id>`, and your free-text `reason`.
+- Default `palace_find` excludes any point with a past `valid_until` — agents only see current truth. Pass `include_superseded: true` to surface the full timeline for archaeology.
+- `palace_recall` always exposes `valid_until` / `superseded_by` / `superseded_reason` on the returned point, so you can tell current-from-stale at a glance.
+
+The palace becomes a journal, not a snapshot — every correction is an append, never a delete.
 
 ## Palace schema
 

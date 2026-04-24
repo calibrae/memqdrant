@@ -21,6 +21,10 @@ pub struct FindFilter {
     pub since: Option<String>,
     /// Inclusive upper bound on `timestamp` (RFC3339).
     pub until: Option<String>,
+    /// Hide points whose `valid_until` is at-or-before this instant (RFC3339).
+    /// Typically set to "now" by callers that want only current-truth memories.
+    /// Points without `valid_until` are always kept.
+    pub exclude_superseded_before: Option<String>,
 }
 
 impl FindFilter {
@@ -31,6 +35,7 @@ impl FindFilter {
             && self.hall.is_none()
             && self.since.is_none()
             && self.until.is_none()
+            && self.exclude_superseded_before.is_none()
     }
 
     fn to_qdrant_filter(&self) -> Option<Value> {
@@ -38,6 +43,7 @@ impl FindFilter {
             return None;
         }
         let mut must = Vec::new();
+        let mut must_not = Vec::new();
         let pairs = [
             ("wing", &self.wing),
             ("category", &self.category),
@@ -59,7 +65,23 @@ impl FindFilter {
             }
             must.push(json!({ "key": "timestamp", "range": range }));
         }
-        Some(json!({ "must": must }))
+        if let Some(now) = &self.exclude_superseded_before {
+            // Exclude points that have a `valid_until` at-or-before `now`.
+            // Qdrant range conditions only match when the field exists, so
+            // points without `valid_until` slip through unaffected.
+            must_not.push(json!({
+                "key": "valid_until",
+                "range": { "lte": now }
+            }));
+        }
+        let mut body = serde_json::Map::new();
+        if !must.is_empty() {
+            body.insert("must".into(), Value::Array(must));
+        }
+        if !must_not.is_empty() {
+            body.insert("must_not".into(), Value::Array(must_not));
+        }
+        Some(Value::Object(body))
     }
 }
 
@@ -133,6 +155,27 @@ impl Qdrant {
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("qdrant upsert {}: {}", status, text));
+        }
+        Ok(())
+    }
+
+    /// Merge `fields` into the payload of point `id`. Qdrant's set-payload
+    /// endpoint leaves untouched keys alone — useful for `palace_supersede`
+    /// marking an old point without rewriting the rest of its payload.
+    pub async fn set_payload(&self, id: u64, fields: Value) -> Result<()> {
+        let url = self.url("/points/payload?wait=true");
+        let body = json!({ "payload": fields, "points": [id] });
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("qdrant set_payload {id}: {status} {text}"));
         }
         Ok(())
     }
@@ -265,12 +308,13 @@ impl Qdrant {
     /// Qdrant accepts re-creation as no-op.
     pub async fn ensure_indexes(&self) -> Result<()> {
         let url = self.url("/index?wait=true");
-        let fields: [(&str, &str); 5] = [
+        let fields: [(&str, &str); 6] = [
             ("wing", "keyword"),
             ("category", "keyword"),
             ("room", "keyword"),
             ("hall", "keyword"),
             ("timestamp", "datetime"),
+            ("valid_until", "datetime"),
         ];
         for (field, schema) in fields {
             let body = json!({ "field_name": field, "field_schema": schema });
@@ -295,27 +339,18 @@ fn id_as_u64(v: &Value) -> Option<u64> {
 
 fn to_memory_scored(p: ScoredPoint) -> Option<Memory> {
     let id = id_as_u64(&p.id)?;
-    let pl = p.payload?;
-    Some(Memory {
-        id,
-        score: Some(p.score),
-        text: pl.text,
-        category: pl.category,
-        wing: pl.wing,
-        room: pl.room,
-        hall: pl.hall,
-        timestamp: pl.timestamp,
-        session: pl.session,
-        source_file: pl.source_file,
-    })
+    Some(hydrate(id, Some(p.score), p.payload?))
 }
 
 fn to_memory_plain(p: RetrievedPoint) -> Option<Memory> {
     let id = id_as_u64(&p.id)?;
-    let pl = p.payload?;
-    Some(Memory {
+    Some(hydrate(id, None, p.payload?))
+}
+
+fn hydrate(id: u64, score: Option<f32>, pl: Payload) -> Memory {
+    Memory {
         id,
-        score: None,
+        score,
         text: pl.text,
         category: pl.category,
         wing: pl.wing,
@@ -324,5 +359,10 @@ fn to_memory_plain(p: RetrievedPoint) -> Option<Memory> {
         timestamp: pl.timestamp,
         session: pl.session,
         source_file: pl.source_file,
-    })
+        valid_from: pl.valid_from,
+        valid_until: pl.valid_until,
+        supersedes: pl.supersedes,
+        superseded_by: pl.superseded_by,
+        superseded_reason: pl.superseded_reason,
+    }
 }

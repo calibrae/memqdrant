@@ -22,6 +22,9 @@ const DUPLICATE_THRESHOLD: f32 = 0.95;
 const MAX_TEXT_BYTES: usize = 32 * 1024;
 /// Cap on a single palace_recall batch. Keeps one tool call from fetching the whole palace.
 const MAX_RECALL_IDS: usize = 100;
+/// Cap on how many points can be superseded in one tool call. Large batches are usually a
+/// design smell — revisit the model or run multiple calls.
+const MAX_SUPERSEDES: usize = 50;
 
 #[derive(Clone)]
 pub struct Palace {
@@ -94,6 +97,30 @@ pub struct FindArgs {
     /// enable (e.g. 365 = year-long half-life). Omit or 0 for pure cosine.
     #[serde(default)]
     pub recency_half_life_days: Option<f64>,
+    /// Include memories that have been superseded by a newer entry. Default
+    /// false — only current-truth memories are returned. Set to true for
+    /// archaeology / auditing.
+    #[serde(default)]
+    pub include_superseded: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SupersedeArgs {
+    /// Point ID(s) that this new memory replaces. Each is marked with
+    /// `valid_until = now`, `superseded_by = <new_id>`, `superseded_reason`.
+    pub supersedes: Vec<u64>,
+    /// The corrected / updated memory text (stored verbatim, embedded).
+    pub text: String,
+    pub category: Category,
+    pub wing: Wing,
+    pub room: String,
+    pub hall: Hall,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub source_file: Option<String>,
+    /// Short human explanation recorded on each superseded point.
+    pub reason: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -134,7 +161,7 @@ impl Palace {
     }
 
     #[tool(
-        description = "Semantic search over the palace. Optional typed filters narrow the search before vector comparison: wing/category/room/hall for faceted filtering, since/until (RFC3339) for time-range filtering, recency_half_life_days to bias scores toward recent memories (e.g. 365 = year-long half-life)."
+        description = "Semantic search over the palace. Optional typed filters narrow the search before vector comparison: wing/category/room/hall for faceted filtering, since/until (RFC3339) for time-range filtering, recency_half_life_days to bias scores toward recent memories. By default, points that have been superseded by a newer memory (via palace_supersede) are hidden; pass include_superseded=true to surface them for archaeology."
     )]
     async fn palace_find(
         &self,
@@ -208,6 +235,20 @@ impl Palace {
         });
         Ok(CallToolResult::success(vec![Content::text(
             body.to_string(),
+        )]))
+    }
+
+    #[tool(
+        description = "Replace one or more existing memories with a corrected/updated version. Embeds and stores the new text, marks each old point with valid_until=now, superseded_by=<new_id>, and the given reason. Use this when a fact changed over time (e.g. infrastructure reshuffle, decision reversal) instead of deleting the old entry — the old point stays in the palace for archaeology but is hidden from default palace_find."
+    )]
+    async fn palace_supersede(
+        &self,
+        Parameters(args): Parameters<SupersedeArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let res = self.do_supersede(args).await.map_err(err)?;
+        let payload = serde_json::to_value(&res).map_err(err)?;
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
         )]))
     }
 
@@ -288,6 +329,11 @@ impl Palace {
             timestamp: timestamp.clone(),
             session: args.session.clone(),
             source_file: args.source_file.clone(),
+            valid_from: None,
+            valid_until: None,
+            supersedes: None,
+            superseded_by: None,
+            superseded_reason: None,
         };
 
         self.wal.log(
@@ -335,6 +381,11 @@ impl Palace {
             }
         }
         let limit = args.limit.unwrap_or(5).clamp(1, 20);
+        let exclude_superseded_before = if args.include_superseded.unwrap_or(false) {
+            None
+        } else {
+            Some(now_rfc3339())
+        };
         let filter = FindFilter {
             wing: args.wing.map(|w| w.as_str().to_string()),
             category: args.category.map(|c| c.as_str().to_string()),
@@ -342,6 +393,7 @@ impl Palace {
             hall: args.hall.map(|h| h.as_str().to_string()),
             since: args.since,
             until: args.until,
+            exclude_superseded_before,
         };
         let vec = self.embedder.embed(&args.query).await?;
 
@@ -377,6 +429,131 @@ impl Palace {
         hits.truncate(limit as usize);
         Ok(hits)
     }
+
+    async fn do_supersede(&self, args: SupersedeArgs) -> anyhow::Result<SupersedeResult> {
+        if args.text.len() > MAX_TEXT_BYTES {
+            anyhow::bail!(
+                "text too large: {} bytes (max {})",
+                args.text.len(),
+                MAX_TEXT_BYTES
+            );
+        }
+        if args.text.trim().is_empty() {
+            anyhow::bail!("text is empty");
+        }
+        if args.reason.trim().is_empty() {
+            anyhow::bail!("reason is empty — say why the supersession happened");
+        }
+        if args.supersedes.is_empty() {
+            anyhow::bail!("supersedes is empty — nothing to supersede");
+        }
+        if args.supersedes.len() > MAX_SUPERSEDES {
+            anyhow::bail!(
+                "too many supersedes: {} (max {})",
+                args.supersedes.len(),
+                MAX_SUPERSEDES
+            );
+        }
+
+        let vec = self.embedder.embed(&args.text).await?;
+        let id = new_id();
+        let now = now_rfc3339();
+        let payload = Payload {
+            category: args.category.as_str().to_string(),
+            wing: args.wing.as_str().to_string(),
+            room: args.room.clone(),
+            hall: args.hall.as_str().to_string(),
+            text: args.text.clone(),
+            timestamp: now.clone(),
+            session: args.session.clone(),
+            source_file: args.source_file.clone(),
+            valid_from: Some(now.clone()),
+            valid_until: None,
+            supersedes: Some(args.supersedes.clone()),
+            superseded_by: None,
+            superseded_reason: None,
+        };
+
+        self.wal.log(
+            "palace_supersede",
+            &json!({
+                "id": id,
+                "supersedes": args.supersedes,
+                "reason": args.reason,
+                "wing": payload.wing,
+                "room": payload.room,
+                "hall": payload.hall,
+                "category": payload.category,
+                "text_preview": preview(&payload.text),
+                "session": payload.session,
+            }),
+        );
+
+        self.qdrant.upsert(id, vec, payload).await?;
+
+        // Mark each old point. Non-atomic across points — if any patch fails,
+        // we report it and leave the caller to retry with the same supersedes list.
+        let mut marked = Vec::with_capacity(args.supersedes.len());
+        for old_id in &args.supersedes {
+            let fields = json!({
+                "valid_until": now.clone(),
+                "superseded_by": id,
+                "superseded_reason": args.reason.clone(),
+            });
+            let result = self.qdrant.set_payload(*old_id, fields).await;
+            match result {
+                Ok(()) => marked.push(SupersededEntry {
+                    id: *old_id,
+                    ok: true,
+                    error: None,
+                }),
+                Err(e) => {
+                    tracing::warn!(id = *old_id, "supersede mark failed: {e:#}");
+                    marked.push(SupersededEntry {
+                        id: *old_id,
+                        ok: false,
+                        error: Some(format!("{e:#}")),
+                    });
+                }
+            }
+        }
+
+        Ok(SupersedeResult {
+            id,
+            text: args.text,
+            wing: args.wing.as_str().to_string(),
+            room: args.room,
+            hall: args.hall.as_str().to_string(),
+            timestamp: now,
+            supersedes: args.supersedes,
+            reason: args.reason,
+            marked,
+        })
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SupersedeResult {
+    id: u64,
+    text: String,
+    wing: String,
+    room: String,
+    hall: String,
+    timestamp: String,
+    supersedes: Vec<u64>,
+    reason: String,
+    /// Per-old-point result of the payload patch. If any `ok: false` entries,
+    /// the caller can retry `palace_supersede` with that smaller supersedes
+    /// list — the new point is already created, so the retry is cheap.
+    marked: Vec<SupersededEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct SupersededEntry {
+    id: u64,
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[tool_handler]
@@ -391,7 +568,7 @@ impl ServerHandler for Palace {
             "memqdrant — Cali's memory palace over MCP. \
              Every memory has a wing (projects/infrastructure/nexpublica/personal/career/vibe), \
              a room (free-text project or topic), and a hall (facts/events/decisions/discoveries/preferences). \
-             Tools: palace_store, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate.".to_string(),
+             Tools: palace_store, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede.".to_string(),
         )
     }
 }
