@@ -2,15 +2,15 @@
 
 MCP server exposing a Qdrant-backed memory palace — typed wings, rooms, and halls instead of a generic blob store.
 
-Cali's Rust daemon. Stdio only. No web UI, no auth, no drama.
+Cali's Rust daemon. Stdio or Streamable HTTP. No web UI, no auth, no drama.
 
 ## What it is
 
 A single-binary Rust MCP server that:
 
-- Speaks MCP over **stdio** (run locally) or **Streamable HTTP** (run as a service)
-- Embeds text with [Ollama](https://ollama.com/) (`nomic-embed-text` by default, 768-dim)
-- Stores and retrieves points in [Qdrant](https://qdrant.tech/) with a **structured palace schema** (wing → room → hall)
+- Speaks MCP over **stdio** (run locally) or **Streamable HTTP** (run as a service for a team or a homelab)
+- Embeds text via one of two backends — local ONNX (`fastembed-rs`, fully self-contained) or a remote Ollama (`nomic-embed-text`). Either way: 768-dim, same vector space.
+- Stores and retrieves points in [Qdrant](https://qdrant.tech/) with a **structured palace schema** (wing → room → hall) and **temporal validity** (`valid_until` / `superseded_by`) so the palace is a journal, not a snapshot
 - Detects near-duplicates before writing (cosine ≥ 0.95 + exact text match)
 - Keeps an append-only JSONL write-ahead log for every mutation
 
@@ -76,15 +76,17 @@ IDs ≥ `1_000_000_000` are reserved for auto-generation (unix-millis). The pala
 
 All via environment variables:
 
-| Variable | Default |
-|---|---|
-| `OLLAMA_URL` | `http://localhost:11434` |
-| `OLLAMA_MODEL` | `nomic-embed-text` |
-| `QDRANT_URL` | `http://localhost:6333` |
-| `COLLECTION` | `claude-memory` |
-| `MEMQDRANT_WAL` | `~/.memqdrant/wal.jsonl` |
-| `MEMQDRANT_BIND` | `127.0.0.1:6334` (only used by `serve`) |
-| `RUST_LOG` | `memqdrant=info` |
+| Variable | Default | Notes |
+|---|---|---|
+| `QDRANT_URL` | `http://localhost:6333` | |
+| `COLLECTION` | `claude-memory` | |
+| `MEMQDRANT_WAL` | `~/.memqdrant/wal.jsonl` | |
+| `MEMQDRANT_BIND` | `127.0.0.1:6334` | only used by `serve` |
+| `MEMQDRANT_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | DNS-rebinding guard for `serve`; set to `*` to disable |
+| `OLLAMA_URL` | `http://localhost:11434` | only read by the `ollama` backend |
+| `OLLAMA_MODEL` | `nomic-embed-text` | only read by the `ollama` backend |
+| `FASTEMBED_CACHE_DIR` | `~/.cache/fastembed` | only used by the `fastembed` backend |
+| `RUST_LOG` | `memqdrant=info` | |
 
 Logging goes to **stderr only**. Stdout is the MCP transport — anything written there corrupts the JSON-RPC stream.
 
@@ -96,8 +98,8 @@ memqdrant ships two backends behind mutually-exclusive cargo features. Pick one 
 
 | Feature | How it embeds | When to use |
 |---|---|---|
-| `ollama` (default) | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN (or localhost). Ops simplicity — no native deps, binary stays small. |
-| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5` via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want memqdrant self-contained with zero external services. Trade a larger binary (~28 MB) and a ~137 MB one-time model download for one less daemon to keep alive. |
+| `ollama` (default) | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN (or localhost). Tiny binary, no native deps. |
+| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5-Q` (INT8 dynamic-quantised) via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want memqdrant fully self-contained — zero external services. Static binary, ~110 MB one-time model download into `FASTEMBED_CACHE_DIR`, ~1 GB resident. |
 
 Select the variant via cargo features (release archives publish both per-platform):
 
@@ -106,7 +108,7 @@ cargo build --release                                          # ollama (default
 cargo build --release --no-default-features --features fastembed
 ```
 
-The two backends produce 768-dim vectors that are numerically *close but not bitwise identical* — Ollama uses GGUF FP16, fastembed uses ONNX. Existing points embedded with one backend remain retrievable with the other; expect minor recency/ranking drift on borderline queries.
+Both backends produce 768-dim vectors in the **same vector space** (nomic-embed-text-v1.5 architecture). Existing points embedded with one backend stay searchable with the other — including across the f32 → INT8-quantised swap that landed in v0.5.1. Expect ~0.98–0.99 cosine on the same text between any two precision combos, which is below the noise floor of typical palace queries.
 
 ## Build
 
@@ -114,7 +116,7 @@ The two backends produce 768-dim vectors that are numerically *close but not bit
 cargo build --release
 ```
 
-Release profile is LTO-thin, single codegen unit, stripped. Binary ~8 MB with the `ollama` backend, ~28 MB with `fastembed` (static ONNX runtime).
+Release profile is LTO-thin, single codegen unit, stripped. Binary ~8 MB with the `ollama` backend, ~28 MB with `fastembed` (static ONNX runtime included). Resident memory at idle: ~30 MB (ollama) or ~1 GB (fastembed, model loaded).
 
 ## Running
 
@@ -184,9 +186,9 @@ cargo build --release
 python3 scripts/smoke.py
 ```
 
-It creates `memqdrant-test`, boots the binary, round-trips store / find / recall / status / check_duplicate / duplicate-skip / filtered find, and drops the collection. Fails loudly on any mismatch.
+It creates `memqdrant-test`, boots the binary, round-trips store / find / recall / status / check_duplicate / duplicate-skip / filtered find / since-until / recency-boost / supersede / superseded-hidden / superseded-surfaced / recall-temporal-metadata, and drops the collection. Fails loudly on any mismatch.
 
-Requires live Qdrant and Ollama reachable at their configured URLs.
+Requires live Qdrant and (for the `ollama` backend) Ollama reachable at the configured URLs. The `fastembed` backend has no external service requirement once the model cache is warm.
 
 ## Security notes
 
@@ -198,11 +200,10 @@ Requires live Qdrant and Ollama reachable at their configured URLs.
 
 ## Non-goals
 
-- Not a multi-user service.
-- No HTTP/SSE transport. Stdio only.
-- No web UI. Use the Qdrant dashboard for inspection.
-- No knowledge graph, temporal validity windows, or agent diaries. If you want those, run [MemPalace](https://github.com/MemPalace/mempalace).
-- No collection migrations. The palace schema is fixed; existing points embedded with `nomic-embed-text` must stay on that model.
+- **No multi-tenant auth.** Anyone reachable on the listener can read and write the palace. Put it behind a tailnet, a reverse proxy with auth, or a localhost-only bind. memqdrant assumes a trusted network.
+- **No web UI.** Use the Qdrant dashboard for raw inspection; the MCP tools are the supported interface.
+- **No knowledge graph, no agent diaries, no LLM rerankers, no embedding-model swaps to a different architecture.** The palace stays a single 768-dim collection on nomic-embed-text. If you want any of those layers, [MemPalace](https://github.com/MemPalace/mempalace) is purpose-built for it.
+- **No automatic collection migrations across architecture changes.** Compatible variants of the same model (V15 ↔ V15Q) work in the same collection because the vector space is identical. A different architecture would invalidate the existing points and isn't supported.
 
 ## License
 
