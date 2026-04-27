@@ -1,6 +1,7 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use mcp_gain::Tracker;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -10,6 +11,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::baselines;
 use crate::embed::Embedder;
 use crate::qdrant::{FindFilter, Qdrant};
 use crate::schema::{Category, Hall, Memory, Payload, Wing};
@@ -31,6 +33,7 @@ pub struct Palace {
     embedder: Arc<Embedder>,
     qdrant: Arc<Qdrant>,
     wal: Arc<Wal>,
+    tracker: Arc<Tracker>,
     // `tool_router` is read via the derived `Clone` impl and by the `#[tool_router]` macro,
     // but clippy can't see that — silence the warning.
     #[allow(dead_code)]
@@ -135,14 +138,53 @@ pub struct CheckDuplicateArgs {
     pub text: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GainArgs {
+    /// Optional inclusive lower bound (RFC3339 second-precision UTC). Aggregates only
+    /// events at or after this time. Useful for "gain since deploy" / "gain today".
+    #[serde(default)]
+    pub since: Option<String>,
+    /// If true, return the human-friendly text rendering as well as the structured JSON.
+    /// Default false — agents almost always want structured.
+    #[serde(default)]
+    pub include_text: Option<bool>,
+}
+
 #[tool_router]
 impl Palace {
-    pub fn new(embedder: Embedder, qdrant: Qdrant, wal: Wal) -> Self {
+    pub fn new(embedder: Embedder, qdrant: Qdrant, wal: Wal, tracker: Tracker) -> Self {
         Self {
             embedder: Arc::new(embedder),
             qdrant: Arc::new(qdrant),
             wal: Arc::new(wal),
+            tracker: Arc::new(tracker),
             tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Bridge between an `anyhow::Result<T>` body and an MCP `CallToolResult`,
+    /// recording one row in the gain log along the way. Pattern lifted from
+    /// prompto's `finish_tool` so siblings stay consistent.
+    fn finish_tool<T: Serialize>(
+        &self,
+        tool: &'static str,
+        started: Instant,
+        res: anyhow::Result<T>,
+    ) -> Result<CallToolResult, McpError> {
+        let exec_ms = started.elapsed().as_millis() as u64;
+        match res {
+            Ok(v) => {
+                let body = serde_json::to_value(&v).unwrap_or_default().to_string();
+                self.tracker
+                    .record(tool, None, true, exec_ms, body.len() as u64);
+                Ok(CallToolResult::success(vec![Content::text(body)]))
+            }
+            Err(e) => {
+                let msg = format!("{e:#}");
+                self.tracker
+                    .record(tool, None, false, exec_ms, msg.len() as u64);
+                Err(McpError::internal_error(msg, None))
+            }
         }
     }
 
@@ -153,11 +195,9 @@ impl Palace {
         &self,
         Parameters(args): Parameters<StoreArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let res = self.do_store(args).await.map_err(err)?;
-        let payload = serde_json::to_value(&res).map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            payload.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_store(args).await;
+        self.finish_tool("palace_store", started, res)
     }
 
     #[tool(
@@ -167,11 +207,9 @@ impl Palace {
         &self,
         Parameters(args): Parameters<FindArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let results = self.do_find(args).await.map_err(err)?;
-        let payload = serde_json::to_value(&results).map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            payload.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_find(args).await;
+        self.finish_tool("palace_find", started, res)
     }
 
     #[tool(
@@ -181,61 +219,27 @@ impl Palace {
         &self,
         Parameters(args): Parameters<RecallArgs>,
     ) -> Result<CallToolResult, McpError> {
-        if args.ids.len() > MAX_RECALL_IDS {
-            return Err(err(format!(
-                "too many ids: {} (max {})",
-                args.ids.len(),
-                MAX_RECALL_IDS
-            )));
-        }
-        let results = self.qdrant.retrieve(args.ids).await.map_err(err)?;
-        let payload = serde_json::to_value(&results).map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            payload.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_recall(args).await;
+        self.finish_tool("palace_recall", started, res)
     }
 
     #[tool(
         description = "Palace status: total point count plus breakdown by wing and by hall. Useful for agents orienting themselves before searching."
     )]
     async fn palace_status(&self) -> Result<CallToolResult, McpError> {
-        let total = self
-            .qdrant
-            .count(&FindFilter::default())
-            .await
-            .map_err(err)?;
-        let wings = self.qdrant.facet("wing").await.map_err(err)?;
-        let halls = self.qdrant.facet("hall").await.map_err(err)?;
-        let categories = self.qdrant.facet("category").await.map_err(err)?;
-        let body = json!({
-            "collection": self.qdrant.collection(),
-            "total": total,
-            "wings": facet_map(&wings),
-            "halls": facet_map(&halls),
-            "categories": facet_map(&categories),
-        });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_status().await;
+        self.finish_tool("palace_status", started, res)
     }
 
     #[tool(
         description = "Faceted taxonomy: value → count for wing, room, hall, category. Same data as palace_status but flatter — good for dump-the-layout queries."
     )]
     async fn palace_taxonomy(&self) -> Result<CallToolResult, McpError> {
-        let wings = self.qdrant.facet("wing").await.map_err(err)?;
-        let rooms = self.qdrant.facet("room").await.map_err(err)?;
-        let halls = self.qdrant.facet("hall").await.map_err(err)?;
-        let categories = self.qdrant.facet("category").await.map_err(err)?;
-        let body = json!({
-            "wings": facet_map(&wings),
-            "rooms": facet_map(&rooms),
-            "halls": facet_map(&halls),
-            "categories": facet_map(&categories),
-        });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_taxonomy().await;
+        self.finish_tool("palace_taxonomy", started, res)
     }
 
     #[tool(
@@ -245,11 +249,9 @@ impl Palace {
         &self,
         Parameters(args): Parameters<SupersedeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let res = self.do_supersede(args).await.map_err(err)?;
-        let payload = serde_json::to_value(&res).map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(
-            payload.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_supersede(args).await;
+        self.finish_tool("palace_supersede", started, res)
     }
 
     #[tool(
@@ -259,26 +261,21 @@ impl Palace {
         &self,
         Parameters(args): Parameters<CheckDuplicateArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let vec = self.embedder.embed(&args.text).await.map_err(err)?;
-        let hits = self
-            .qdrant
-            .search(vec, 1, &FindFilter::default())
-            .await
-            .map_err(err)?;
-        let top = hits.into_iter().next();
-        let is_duplicate = top
-            .as_ref()
-            .and_then(|m| m.score)
-            .map(|s| s >= DUPLICATE_THRESHOLD)
-            .unwrap_or(false);
-        let body = json!({
-            "is_duplicate": is_duplicate,
-            "threshold": DUPLICATE_THRESHOLD,
-            "closest": top,
-        });
-        Ok(CallToolResult::success(vec![Content::text(
-            body.to_string(),
-        )]))
+        let started = Instant::now();
+        let res = self.do_check_duplicate(args).await;
+        self.finish_tool("palace_check_duplicate", started, res)
+    }
+
+    #[tool(
+        description = "Token-savings report: how many tokens of agent context this palazzo has saved versus a hand-coded SSH+curl+jq equivalent. Aggregates the per-tool gain log; pass `since` (RFC3339) to scope to a recent window. Set include_text=true for a human-friendly text block alongside the structured numbers."
+    )]
+    async fn palace_gain(
+        &self,
+        Parameters(args): Parameters<GainArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let started = Instant::now();
+        let res = self.do_gain(args).await;
+        self.finish_tool("palace_gain", started, res)
     }
 }
 
@@ -530,6 +527,85 @@ impl Palace {
             marked,
         })
     }
+
+    async fn do_recall(&self, args: RecallArgs) -> anyhow::Result<Vec<Memory>> {
+        if args.ids.len() > MAX_RECALL_IDS {
+            anyhow::bail!("too many ids: {} (max {MAX_RECALL_IDS})", args.ids.len());
+        }
+        self.qdrant.retrieve(args.ids).await
+    }
+
+    async fn do_status(&self) -> anyhow::Result<serde_json::Value> {
+        let total = self.qdrant.count(&FindFilter::default()).await?;
+        let wings = self.qdrant.facet("wing").await?;
+        let halls = self.qdrant.facet("hall").await?;
+        let categories = self.qdrant.facet("category").await?;
+        Ok(json!({
+            "collection": self.qdrant.collection(),
+            "total": total,
+            "wings": facet_map(&wings),
+            "halls": facet_map(&halls),
+            "categories": facet_map(&categories),
+        }))
+    }
+
+    async fn do_taxonomy(&self) -> anyhow::Result<serde_json::Value> {
+        let wings = self.qdrant.facet("wing").await?;
+        let rooms = self.qdrant.facet("room").await?;
+        let halls = self.qdrant.facet("hall").await?;
+        let categories = self.qdrant.facet("category").await?;
+        Ok(json!({
+            "wings": facet_map(&wings),
+            "rooms": facet_map(&rooms),
+            "halls": facet_map(&halls),
+            "categories": facet_map(&categories),
+        }))
+    }
+
+    async fn do_check_duplicate(
+        &self,
+        args: CheckDuplicateArgs,
+    ) -> anyhow::Result<serde_json::Value> {
+        let vec = self.embedder.embed(&args.text).await?;
+        let hits = self.qdrant.search(vec, 1, &FindFilter::default()).await?;
+        let top = hits.into_iter().next();
+        let is_duplicate = top
+            .as_ref()
+            .and_then(|m| m.score)
+            .map(|s| s >= DUPLICATE_THRESHOLD)
+            .unwrap_or(false);
+        Ok(json!({
+            "is_duplicate": is_duplicate,
+            "threshold": DUPLICATE_THRESHOLD,
+            "closest": top,
+        }))
+    }
+
+    async fn do_gain(&self, args: GainArgs) -> anyhow::Result<serde_json::Value> {
+        let since = match args.since.as_deref() {
+            None => None,
+            Some(s) => {
+                let secs = crate::util::parse_rfc3339(s).ok_or_else(|| {
+                    anyhow::anyhow!("since must be RFC3339 second-precision UTC, got {s:?}")
+                })?;
+                Some(
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+                        .ok_or_else(|| anyhow::anyhow!("since out of range"))?,
+                )
+            }
+        };
+        let summary = self.tracker.summary(since)?;
+        let mut value = serde_json::to_value(&summary)?;
+        if args.include_text.unwrap_or(false)
+            && let Some(obj) = value.as_object_mut()
+        {
+            obj.insert(
+                "text".into(),
+                serde_json::Value::String(mcp_gain::render_text(&summary, &baselines::header())),
+            );
+        }
+        Ok(value)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -568,7 +644,7 @@ impl ServerHandler for Palace {
             "memqdrant — Cali's memory palace over MCP. \
              Every memory has a wing (projects/infrastructure/nexpublica/personal/career/vibe), \
              a room (free-text project or topic), and a hall (facts/events/decisions/discoveries/preferences). \
-             Tools: palace_store, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede.".to_string(),
+             Tools: palace_store, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede, palace_gain.".to_string(),
         )
     }
 }
@@ -597,8 +673,4 @@ fn preview(s: &str) -> String {
     }
     let truncated: String = s.chars().take(MAX).collect();
     format!("{truncated}…")
-}
-
-fn err(e: impl std::fmt::Display) -> McpError {
-    McpError::internal_error(e.to_string(), None)
 }

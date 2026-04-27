@@ -1,3 +1,4 @@
+mod baselines;
 mod embed;
 mod mcp;
 mod qdrant;
@@ -13,7 +14,10 @@ compile_error!(
 #[cfg(not(any(feature = "ollama", feature = "fastembed")))]
 compile_error!("enable one of the embedding features: `ollama` (default) or `fastembed`.");
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
+use mcp_gain::Tracker;
 use rmcp::{
     ServiceExt,
     transport::{
@@ -60,12 +64,33 @@ impl Config {
         let embedder = make_embedder(self)?;
         let qdrant = Qdrant::new(&self.qdrant_url, &self.collection);
         let wal = Wal::from_env();
-        Ok(Palace::new(embedder, qdrant, wal))
+        let tracker = make_tracker();
+        Ok(Palace::new(embedder, qdrant, wal, tracker))
     }
 
     fn make_qdrant(&self) -> Qdrant {
         Qdrant::new(&self.qdrant_url, &self.collection)
     }
+}
+
+/// Where the gain analytics log lives. Defaults to `/var/lib/memqdrant/usage.jsonl`
+/// (matches the systemd unit's ReadWritePaths) but is overridable for local dev
+/// or relocated deployments.
+fn usage_log_path() -> PathBuf {
+    std::env::var("MEMQDRANT_USAGE_LOG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/memqdrant/usage.jsonl"))
+}
+
+fn gain_enabled() -> bool {
+    !matches!(
+        std::env::var("MEMQDRANT_GAIN_ENABLED").as_deref(),
+        Ok("0" | "false" | "no" | "off")
+    )
+}
+
+fn make_tracker() -> Tracker {
+    Tracker::new(usage_log_path(), gain_enabled(), baselines::BASELINES)
 }
 
 const BACKEND: &str = if cfg!(feature = "fastembed") {
@@ -91,6 +116,9 @@ Usage:
   memqdrant                      Serve MCP over stdio (default)
   memqdrant serve [--bind ADDR]  Serve MCP over Streamable HTTP at POST /mcp
                                  (default ADDR: 127.0.0.1:6334, override with MEMQDRANT_BIND)
+  memqdrant gain [--since-secs N] [--json]
+                                 Render the token-savings report from MEMQDRANT_USAGE_LOG.
+                                 Defaults to all-time text rendering; --json emits the structured Summary.
   memqdrant --help               Show this message
 
 Environment:
@@ -101,6 +129,8 @@ Environment:
   MEMQDRANT_WAL (default ~/.memqdrant/wal.jsonl)
   MEMQDRANT_BIND (default 127.0.0.1:6334 in serve mode)
   MEMQDRANT_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
+  MEMQDRANT_USAGE_LOG (default /var/lib/memqdrant/usage.jsonl — gain analytics JSONL)
+  MEMQDRANT_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
   RUST_LOG      (default memqdrant=info)
 ",
         env!("CARGO_PKG_VERSION")
@@ -122,6 +152,7 @@ async fn main() -> Result<()> {
     match args.first().map(String::as_str) {
         None => run_stdio().await,
         Some("serve") => run_http(&args[1..]).await,
+        Some("gain") => run_gain(&args[1..]),
         Some("--help" | "-h") => {
             print_help();
             Ok(())
@@ -136,6 +167,39 @@ async fn main() -> Result<()> {
             std::process::exit(2);
         }
     }
+}
+
+fn run_gain(rest: &[String]) -> Result<()> {
+    let mut since_secs: Option<u64> = None;
+    let mut as_json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--since-secs" => {
+                since_secs = Some(
+                    rest.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--since-secs requires a value"))?
+                        .parse()
+                        .context("--since-secs must be a non-negative integer")?,
+                );
+                i += 2;
+            }
+            "--json" => {
+                as_json = true;
+                i += 1;
+            }
+            other => anyhow::bail!("unknown gain argument: {other}"),
+        }
+    }
+    let since = since_secs.map(|s| chrono::Utc::now() - chrono::Duration::seconds(s as i64));
+    let tracker = make_tracker();
+    let summary = tracker.summary(since)?;
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        print!("{}", mcp_gain::render_text(&summary, &baselines::header()));
+    }
+    Ok(())
 }
 
 async fn run_stdio() -> Result<()> {

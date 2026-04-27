@@ -1717,6 +1717,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcp-gain"
+version = "0.1.0"
+source = "git+https://github.com/calibrae/mcp-gain?tag=v0.1.0#57790264443956430b1665e4ef905964a538bed8"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1728,7 +1741,9 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "fastembed",
+ "mcp-gain",
  "reqwest 0.13.1",
  "rmcp",
  "schemars",

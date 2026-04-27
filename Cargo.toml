@@ -26,6 +26,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 schemars = "1.1"
 fastembed = { version = "5", optional = true }
+mcp-gain = { git = "https://github.com/calibrae/mcp-gain", tag = "v0.1.0" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [profile.release]
 lto = "thin"
