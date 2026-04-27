@@ -20,10 +20,10 @@ struct Entry<'a, T: Serialize> {
 
 impl Wal {
     pub fn from_env() -> Self {
-        let path = std::env::var("MEMQDRANT_WAL")
+        let path = std::env::var("PALAZZO_WAL")
             .ok()
             .map(PathBuf::from)
-            .or_else(|| dirs_home().map(|h| h.join(".memqdrant").join("wal.jsonl")));
+            .or_else(|| dirs_home().map(|h| h.join(".palazzo").join("wal.jsonl")));
         if let Some(p) = &path
             && let Some(parent) = p.parent()
         {

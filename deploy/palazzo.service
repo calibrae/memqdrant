@@ -1,28 +1,28 @@
 [Unit]
-Description=memqdrant — Qdrant memory palace MCP server (Streamable HTTP)
-Documentation=https://github.com/calibrae/memqdrant
+Description=palazzo — Qdrant memory palace MCP server (Streamable HTTP)
+Documentation=https://github.com/calibrae/palazzo
 After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=memqdrant
-Group=memqdrant
-ExecStart=/opt/memqdrant/bin/memqdrant serve
+User=palazzo
+Group=palazzo
+ExecStart=/opt/palazzo/bin/palazzo serve
 Restart=on-failure
 RestartSec=5
 
-# memqdrant reads Qdrant/Ollama URLs from env; override in /etc/memqdrant/env
-EnvironmentFile=-/etc/memqdrant/env
-Environment=RUST_LOG=memqdrant=info
+# palazzo reads Qdrant/Ollama URLs from env; override in /etc/palazzo/env
+EnvironmentFile=-/etc/palazzo/env
+Environment=RUST_LOG=palazzo=info
 
-# Hardening — memqdrant only needs outbound HTTP to Qdrant/Ollama and writes WAL.
+# Hardening — palazzo only needs outbound HTTP to Qdrant/Ollama and writes WAL.
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/memqdrant
+ReadWritePaths=/var/lib/palazzo
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

@@ -1,6 +1,6 @@
-# memqdrant — guide rapide (FR)
+# palazzo — guide rapide (FR)
 
-`memqdrant` est un serveur MCP qui donne à vos agents (Claude Code, GitHub
+`palazzo` est un serveur MCP qui donne à vos agents (Claude Code, GitHub
 Copilot, etc.) une **mémoire sémantique à long terme** partagée, indexée dans
 Qdrant. Une instance tourne en continu sur la VM dev à `http://10.17.0.142:8089/mcp`.
 
@@ -17,7 +17,7 @@ sémantique.
 Une seule commande dans votre terminal :
 
 ```bash
-claude mcp add --transport http memqdrant http://10.17.0.142:8089/mcp
+claude mcp add --transport http palazzo http://10.17.0.142:8089/mcp
 ```
 
 Vérifier que le serveur est bien connecté :
@@ -29,7 +29,7 @@ claude mcp list
 Vous devriez voir :
 
 ```
-memqdrant: http://10.17.0.142:8089/mcp (HTTP) - ✓ Connected
+palazzo: http://10.17.0.142:8089/mcp (HTTP) - ✓ Connected
 ```
 
 > ⚠️ Le serveur est accessible uniquement depuis le réseau Tailscale de
@@ -39,7 +39,7 @@ memqdrant: http://10.17.0.142:8089/mcp (HTTP) - ✓ Connected
 ### GitHub Copilot (VS Code)
 
 ```bash
-code --add-mcp '{"name":"memqdrant","type":"http","url":"http://10.17.0.142:8089/mcp"}'
+code --add-mcp '{"name":"palazzo","type":"http","url":"http://10.17.0.142:8089/mcp"}'
 ```
 
 Ou éditer `.vscode/mcp.json` dans votre workspace :
@@ -47,7 +47,7 @@ Ou éditer `.vscode/mcp.json` dans votre workspace :
 ```json
 {
   "servers": {
-    "memqdrant": {
+    "palazzo": {
       "type": "http",
       "url": "http://10.17.0.142:8089/mcp"
     }
@@ -82,7 +82,7 @@ cœur, l'agent connaît le schéma et vous guide :
 
 Demandez à l'agent en langage naturel :
 
-> « Stocke dans memqdrant que **nous avons décidé d'utiliser Postgres plutôt
+> « Stocke dans palazzo que **nous avons décidé d'utiliser Postgres plutôt
 > que MongoDB pour le service commande**. C'est une décision technique du
 > projet `commande-api`. »
 
@@ -123,7 +123,7 @@ consultable.
 
 La recherche par défaut est en langage naturel, sur tout le corpus :
 
-> « Cherche dans memqdrant : **pourquoi on utilise Postgres pour commande-api** »
+> « Cherche dans palazzo : **pourquoi on utilise Postgres pour commande-api** »
 
 Filtres optionnels disponibles :
 
@@ -184,7 +184,7 @@ et sujets) déjà connus.
 | Stocker un fait | `palace_store` | « Stocke que… » |
 | Corriger un fait ancien | `palace_supersede` | « La mémoire #X est périmée, remplace-la par… » |
 | Éviter les doublons | `palace_check_duplicate` | « Vérifie qu'on n'a pas déjà ça avant de stocker » |
-| Chercher par sens | `palace_find` | « Cherche dans memqdrant… » |
+| Chercher par sens | `palace_find` | « Cherche dans palazzo… » |
 | Récupérer par ID | `palace_recall` | « Récupère la mémoire #X » |
 | Voir ce qu'il y a | `palace_status` / `palace_taxonomy` | « Montre-moi l'état du palais » |
 
@@ -192,7 +192,7 @@ et sujets) déjà connus.
 
 ## Support
 
-- Code source : https://github.com/calibrae/memqdrant
+- Code source : https://github.com/calibrae/palazzo
 - Problème technique (serveur down, port non accessible) : voir l'équipe infra.
 - Question sur l'usage : ce guide, puis demander directement à l'agent — il
   connaît le schéma et les outils.

@@ -1,10 +1,10 @@
-# Contributing to memqdrant
+# Contributing to palazzo
 
 Small project, low ceremony. Open an issue before a large PR so we don't both waste time.
 
 ## Scope
 
-memqdrant is deliberately minimal: a single-user, stdio-only, Rust MCP server over Qdrant + Ollama.
+palazzo is deliberately minimal: a single-user, stdio-only, Rust MCP server over Qdrant + Ollama.
 
 Good PRs:
 
@@ -41,7 +41,7 @@ cargo build --release
 python3 scripts/smoke.py
 ```
 
-`scripts/smoke.py` creates a throwaway `memqdrant-test` collection, round-trips every tool, then drops it. Do not aim it at `claude-memory` or any production collection. Ever.
+`scripts/smoke.py` creates a throwaway `palazzo-test` collection, round-trips every tool, then drops it. Do not aim it at `claude-memory` or any production collection. Ever.
 
 ## Style
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""End-to-end smoke test for memqdrant against a throwaway Qdrant collection.
+"""end-to-end smoke test for palazzo against a throwaway Qdrant collection.
 
-Spins up the binary with COLLECTION=memqdrant-test, speaks MCP JSON-RPC over
+Spins up the binary with COLLECTION=palazzo-test, speaks MCP JSON-RPC over
 stdio, round-trips store/find/recall/status/check_duplicate, then drops the
 collection. Fails loudly on any non-200 / non-match.
 """
@@ -17,8 +17,8 @@ import urllib.error
 
 QDRANT = os.environ.get("QDRANT_URL", "http://localhost:6333")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-COLLECTION = "memqdrant-test"
-BIN = os.path.join(os.path.dirname(__file__), "..", "target", "release", "memqdrant")
+COLLECTION = "palazzo-test"
+BIN = os.path.join(os.path.dirname(__file__), "..", "target", "release", "palazzo")
 
 
 def http(method, url, body=None):
@@ -85,7 +85,7 @@ class MCPClient:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {},
-                "clientInfo": {"name": "memqdrant-smoke", "version": "0.1"},
+                "clientInfo": {"name": "palazzo-smoke", "version": "0.1"},
             },
         )
         assert "result" in r, f"initialize: {r}"
@@ -114,7 +114,7 @@ def main():
     env["COLLECTION"] = COLLECTION
     env["QDRANT_URL"] = QDRANT
     env["OLLAMA_URL"] = OLLAMA
-    env["RUST_LOG"] = "memqdrant=info"
+    env["RUST_LOG"] = "palazzo=info"
 
     proc = subprocess.Popen(
         [BIN],
@@ -145,10 +145,10 @@ def main():
         stored = client.call(
             "palace_store",
             {
-                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly.",
+                "text": "palazzo smoke test — the MCP server boots and round-trips correctly.",
                 "category": "project-memory",
                 "wing": "projects",
-                "room": "memqdrant",
+                "room": "palazzo",
                 "hall": "events",
                 "session": "smoke-test",
             },
@@ -165,7 +165,7 @@ def main():
         # 3. Recall by ID
         recalled = client.call("palace_recall", {"ids": [new_id]})
         assert len(recalled) == 1 and recalled[0]["id"] == new_id, f"recall: {recalled}"
-        assert recalled[0]["text"].startswith("memqdrant smoke test")
+        assert recalled[0]["text"].startswith("palazzo smoke test")
         print("recalled ok")
 
         # 4. Status
@@ -177,7 +177,7 @@ def main():
         dup = client.call(
             "palace_check_duplicate",
             {
-                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly."
+                "text": "palazzo smoke test — the MCP server boots and round-trips correctly."
             },
         )
         print("dup check:", dup)
@@ -187,10 +187,10 @@ def main():
         stored_again = client.call(
             "palace_store",
             {
-                "text": "memqdrant smoke test — the MCP server boots and round-trips correctly.",
+                "text": "palazzo smoke test — the MCP server boots and round-trips correctly.",
                 "category": "project-memory",
                 "wing": "projects",
-                "room": "memqdrant",
+                "room": "palazzo",
                 "hall": "events",
             },
         )
@@ -198,13 +198,13 @@ def main():
         assert stored_again["id"] == new_id, "duplicate store should return existing id"
         assert stored_again["duplicate_of"] == new_id
 
-        # 7. Filter: wing=projects room=memqdrant
+        # 7. Filter: wing=projects room=palazzo
         filtered = client.call(
             "palace_find",
             {
                 "query": "smoke test",
                 "wing": "projects",
-                "room": "memqdrant",
+                "room": "palazzo",
                 "hall": "events",
                 "limit": 5,
             },
@@ -248,10 +248,10 @@ def main():
             "palace_supersede",
             {
                 "supersedes": [new_id],
-                "text": "memqdrant smoke test — corrected entry, v0.5 supersede path works.",
+                "text": "palazzo smoke test — corrected entry, v0.5 supersede path works.",
                 "category": "project-memory",
                 "wing": "projects",
-                "room": "memqdrant",
+                "room": "palazzo",
                 "hall": "events",
                 "session": "smoke-test",
                 "reason": "superseded by smoke test v0.5",

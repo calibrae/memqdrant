@@ -1,4 +1,4 @@
-# memqdrant
+# palazzo
 
 MCP server exposing a Qdrant-backed memory palace — typed wings, rooms, and halls instead of a generic blob store.
 
@@ -18,8 +18,8 @@ It is intentionally opinionated. If you want a generic `(text, metadata)` store,
 
 ## Inspiration and prior art
 
-- [`qdrant/mcp-server-qdrant`](https://github.com/qdrant/mcp-server-qdrant) — the official Qdrant MCP server (Python, FastMCP). memqdrant borrows its `store` / `find` tool shape, collection configuration, and filter-wrapping pattern.
-- [`MemPalace/mempalace`](https://github.com/MemPalace/mempalace) — the wing / room / drawer terminology and the read-tool set (`status`, `taxonomy`, `check_duplicate`) are lifted from MemPalace's 29-tool MCP server. If you want a full palace with an agentic knowledge graph, cross-wing tunnels, and 96.6% R@5 retrieval on LongMemEval, go use MemPalace directly. memqdrant is the minimum-viable single-user flavour of the same idea, Rust-native, Qdrant-backed.
+- [`qdrant/mcp-server-qdrant`](https://github.com/qdrant/mcp-server-qdrant) — the official Qdrant MCP server (Python, FastMCP). palazzo borrows its `store` / `find` tool shape, collection configuration, and filter-wrapping pattern.
+- [`MemPalace/mempalace`](https://github.com/MemPalace/mempalace) — the wing / room / drawer terminology and the read-tool set (`status`, `taxonomy`, `check_duplicate`) are lifted from MemPalace's 29-tool MCP server. If you want a full palace with an agentic knowledge graph, cross-wing tunnels, and 96.6% R@5 retrieval on LongMemEval, go use MemPalace directly. palazzo is the minimum-viable single-user flavour of the same idea, Rust-native, Qdrant-backed.
 
 Neither upstream is vendored. Both are linked above; please follow and star their work.
 
@@ -41,7 +41,7 @@ Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per fi
 ### Temporal filtering on `palace_find`
 
 - `since` / `until` — inclusive RFC3339 second-precision UTC timestamps (e.g. `2026-04-01T00:00:00Z`). Filter memories by when they were stored. Bad format is rejected with an explicit error.
-- `recency_half_life_days` (f64) — opt-in recency bias. When set, memqdrant fetches up to 4× the requested limit from Qdrant (capped at 80), re-ranks each hit by `score × exp(-age_days / half_life)`, then returns the top `limit`. Omit or pass `0` for pure cosine. Typical values: `30` (aggressive), `90` (moderate), `365` (gentle — a year-old memory gets half its raw score).
+- `recency_half_life_days` (f64) — opt-in recency bias. When set, palazzo fetches up to 4× the requested limit from Qdrant (capped at 80), re-ranks each hit by `score × exp(-age_days / half_life)`, then returns the top `limit`. Omit or pass `0` for pure cosine. Typical values: `30` (aggressive), `90` (moderate), `365` (gentle — a year-old memory gets half its raw score).
 
 Both knobs work alongside the wing/category/room/hall filters — they compose.
 
@@ -81,28 +81,28 @@ All via environment variables:
 |---|---|---|
 | `QDRANT_URL` | `http://localhost:6333` | |
 | `COLLECTION` | `claude-memory` | |
-| `MEMQDRANT_WAL` | `~/.memqdrant/wal.jsonl` | |
-| `MEMQDRANT_BIND` | `127.0.0.1:6334` | only used by `serve` |
-| `MEMQDRANT_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | DNS-rebinding guard for `serve`; set to `*` to disable |
+| `PALAZZO_WAL` | `~/.palazzo/wal.jsonl` | |
+| `PALAZZO_BIND` | `127.0.0.1:6334` | only used by `serve` |
+| `PALAZZO_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | DNS-rebinding guard for `serve`; set to `*` to disable |
 | `OLLAMA_URL` | `http://localhost:11434` | only read by the `ollama` backend |
 | `OLLAMA_MODEL` | `nomic-embed-text` | only read by the `ollama` backend |
 | `FASTEMBED_CACHE_DIR` | `~/.cache/fastembed` | only used by the `fastembed` backend |
-| `MEMQDRANT_USAGE_LOG` | `/var/lib/memqdrant/usage.jsonl` | append-only JSONL backing `palace_gain` |
-| `MEMQDRANT_GAIN_ENABLED` | `1` | set to `0`/`false`/`no`/`off` to disable per-call recording |
-| `RUST_LOG` | `memqdrant=info` | |
+| `PALAZZO_USAGE_LOG` | `/var/lib/palazzo/usage.jsonl` | append-only JSONL backing `palace_gain` |
+| `PALAZZO_GAIN_ENABLED` | `1` | set to `0`/`false`/`no`/`off` to disable per-call recording |
+| `RUST_LOG` | `palazzo=info` | |
 
 Logging goes to **stderr only**. Stdout is the MCP transport — anything written there corrupts the JSON-RPC stream.
 
-On startup, memqdrant creates keyword payload indexes on `wing`, `category`, `room`, `hall` if they're missing. Idempotent; required for the facet-based tools. Adding indexes to an existing collection is non-destructive — Qdrant builds them in place and existing points stay.
+On startup, palazzo creates keyword payload indexes on `wing`, `category`, `room`, `hall` if they're missing. Idempotent; required for the facet-based tools. Adding indexes to an existing collection is non-destructive — Qdrant builds them in place and existing points stay.
 
 ## Embedding backends
 
-memqdrant ships two backends behind mutually-exclusive cargo features. Pick one at build time.
+palazzo ships two backends behind mutually-exclusive cargo features. Pick one at build time.
 
 | Feature | How it embeds | When to use |
 |---|---|---|
 | `ollama` (default) | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN (or localhost). Tiny binary, no native deps. |
-| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5-Q` (INT8 dynamic-quantised) via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want memqdrant fully self-contained — zero external services. Static binary, ~110 MB one-time model download into `FASTEMBED_CACHE_DIR`, ~1 GB resident. |
+| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5-Q` (INT8 dynamic-quantised) via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want palazzo fully self-contained — zero external services. Static binary, ~110 MB one-time model download into `FASTEMBED_CACHE_DIR`, ~1 GB resident. |
 
 Select the variant via cargo features (release archives publish both per-platform):
 
@@ -123,12 +123,12 @@ Release profile is LTO-thin, single codegen unit, stripped. Binary ~8 MB with th
 
 ## Running
 
-memqdrant speaks two transports; pick one.
+palazzo speaks two transports; pick one.
 
 ### stdio (local)
 
 ```
-memqdrant
+palazzo
 ```
 
 Stdout is the MCP channel — logging always goes to stderr. This is the default mode when the binary is invoked with no arguments. Best for single-user laptop use: no port to bind, no service to manage.
@@ -136,23 +136,23 @@ Stdout is the MCP channel — logging always goes to stderr. This is the default
 Register with Claude Code:
 
 ```
-claude mcp add memqdrant -- /path/to/target/release/memqdrant
+claude mcp add palazzo -- /path/to/target/release/palazzo
 claude mcp list
 ```
 
 Override env vars with `-e KEY=VALUE` before the `--`:
 
 ```
-claude mcp add memqdrant \
+claude mcp add palazzo \
   -e COLLECTION=my-palace \
   -e OLLAMA_URL=http://localhost:11434 \
-  -- /path/to/target/release/memqdrant
+  -- /path/to/target/release/palazzo
 ```
 
 ### Streamable HTTP (service)
 
 ```
-memqdrant serve --bind 0.0.0.0:6334
+palazzo serve --bind 0.0.0.0:6334
 ```
 
 Serves MCP over Streamable HTTP at `POST /mcp`. Useful when the binary lives on a server co-located with Qdrant + Ollama, and your laptop (or multiple clients) connect over the network.
@@ -160,25 +160,25 @@ Serves MCP over Streamable HTTP at `POST /mcp`. Useful when the binary lives on 
 Register with Claude Code as a remote server:
 
 ```
-claude mcp add --transport http memqdrant http://your-server:6334/mcp
+claude mcp add --transport http palazzo http://your-server:6334/mcp
 ```
 
-Bind address can also be set via `MEMQDRANT_BIND`. Default is `127.0.0.1:6334`.
+Bind address can also be set via `PALAZZO_BIND`. Default is `127.0.0.1:6334`.
 
 #### Deploy as a systemd service
 
 The `deploy/` directory contains a hardened systemd unit, an env-file template, and an installer. On Debian / Ubuntu / any systemd host:
 
 ```
-# On the target host, after placing the binary at e.g. ~/memqdrant
-sudo ./deploy/install.sh ~/memqdrant
-# Review /etc/memqdrant/env, then:
-sudo systemctl enable --now memqdrant
+# On the target host, after placing the binary at e.g. ~/palazzo
+sudo ./deploy/install.sh ~/palazzo
+# Review /etc/palazzo/env, then:
+sudo systemctl enable --now palazzo
 ```
 
-The unit runs as a dedicated `memqdrant` user, drops all needless privileges (`ProtectSystem=strict`, `MemoryDenyWriteExecute=true`, `RestrictNamespaces=true`, etc.), and persists the WAL at `/var/lib/memqdrant/wal.jsonl`.
+The unit runs as a dedicated `palazzo` user, drops all needless privileges (`ProtectSystem=strict`, `MemoryDenyWriteExecute=true`, `RestrictNamespaces=true`, etc.), and persists the WAL at `/var/lib/palazzo/wal.jsonl`.
 
-If you expose the service beyond a trusted LAN, put a reverse proxy with TLS + auth (e.g. nginx + basic auth, or an identity-aware proxy) in front of `:6334`. There is no built-in authentication — memqdrant assumes a trusted network.
+If you expose the service beyond a trusted LAN, put a reverse proxy with TLS + auth (e.g. nginx + basic auth, or an identity-aware proxy) in front of `:6334`. There is no built-in authentication — palazzo assumes a trusted network.
 
 ## Testing
 
@@ -189,7 +189,7 @@ cargo build --release
 python3 scripts/smoke.py
 ```
 
-It creates `memqdrant-test`, boots the binary, round-trips store / find / recall / status / check_duplicate / duplicate-skip / filtered find / since-until / recency-boost / supersede / superseded-hidden / superseded-surfaced / recall-temporal-metadata, and drops the collection. Fails loudly on any mismatch.
+It creates `palazzo-test`, boots the binary, round-trips store / find / recall / status / check_duplicate / duplicate-skip / filtered find / since-until / recency-boost / supersede / superseded-hidden / superseded-surfaced / recall-temporal-metadata, and drops the collection. Fails loudly on any mismatch.
 
 Requires live Qdrant and (for the `ollama` backend) Ollama reachable at the configured URLs. The `fastembed` backend has no external service requirement once the model cache is warm.
 
@@ -197,13 +197,13 @@ Requires live Qdrant and (for the `ollama` backend) Ollama reachable at the conf
 
 - Stdio transport, single-user threat model. No network listener, no auth.
 - Dependencies audited with `cargo audit` on every build bump.
-- Every write goes through a WAL (`~/.memqdrant/wal.jsonl` by default) with content previews truncated to 120 chars.
+- Every write goes through a WAL (`~/.palazzo/wal.jsonl` by default) with content previews truncated to 120 chars.
 - `OLLAMA_URL` and `QDRANT_URL` are environment-controlled — anyone who can set env vars on this binary can already execute code as you, so the SSRF surface is accepted.
-- MCP tool outputs (including stored text) are echoed back through the protocol; treat them as untrusted input to whatever LLM consumes them. This is a generic MCP concern, not specific to memqdrant.
+- MCP tool outputs (including stored text) are echoed back through the protocol; treat them as untrusted input to whatever LLM consumes them. This is a generic MCP concern, not specific to palazzo.
 
 ## Non-goals
 
-- **No multi-tenant auth.** Anyone reachable on the listener can read and write the palace. Put it behind a tailnet, a reverse proxy with auth, or a localhost-only bind. memqdrant assumes a trusted network.
+- **No multi-tenant auth.** Anyone reachable on the listener can read and write the palace. Put it behind a tailnet, a reverse proxy with auth, or a localhost-only bind. palazzo assumes a trusted network.
 - **No web UI.** Use the Qdrant dashboard for raw inspection; the MCP tools are the supported interface.
 - **No knowledge graph, no agent diaries, no LLM rerankers, no embedding-model swaps to a different architecture.** The palace stays a single 768-dim collection on nomic-embed-text. If you want any of those layers, [MemPalace](https://github.com/MemPalace/mempalace) is purpose-built for it.
 - **No automatic collection migrations across architecture changes.** Compatible variants of the same model (V15 ↔ V15Q) work in the same collection because the vector space is identical. A different architecture would invalidate the existing points and isn't supported.

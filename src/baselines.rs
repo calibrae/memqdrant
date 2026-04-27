@@ -1,7 +1,7 @@
 //! Per-tool token baselines for `mcp-gain`.
 //!
 //! Each entry is the *estimated* number of tokens an agent would have spent if
-//! it had to do the same job without memqdrant — typically some flavour of
+//! it had to do the same job without palazzo — typically some flavour of
 //! `ssh mista 'curl http://127.0.0.1:6333/... ' | jq …` plus, for queries, a
 //! second roundtrip to embed the query text via Ollama or fastembed.
 //!

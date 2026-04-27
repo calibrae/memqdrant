@@ -48,7 +48,7 @@ pub struct StoreArgs {
     pub category: Category,
     /// Palace wing.
     pub wing: Wing,
-    /// Room — free-text topic or project (e.g. "memqdrant", "hermytt", "family").
+    /// Room — free-text topic or project (e.g. "palazzo", "hermytt", "family").
     pub room: String,
     /// Hall — facts / events / decisions / discoveries / preferences.
     pub hall: Hall,
@@ -641,7 +641,7 @@ impl ServerHandler for Palace {
         .with_server_info(Implementation::from_build_env())
         .with_protocol_version(ProtocolVersion::LATEST)
         .with_instructions(
-            "memqdrant — Cali's memory palace over MCP. \
+            "palazzo — Cali's memory palace over MCP. \
              Every memory has a wing (projects/infrastructure/nexpublica/personal/career/vibe), \
              a room (free-text project or topic), and a hall (facts/events/decisions/discoveries/preferences). \
              Tools: palace_store, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede, palace_gain.".to_string(),

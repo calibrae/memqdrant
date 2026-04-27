@@ -2,5 +2,6 @@
 CLAUDE.md
 resume.sh
 .memqdrant/
+.palazzo/
 .claude/
 .fastembed_cache/

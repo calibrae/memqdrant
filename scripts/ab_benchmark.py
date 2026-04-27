@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""A/B benchmark: run the same query set against two memqdrant endpoints
+"""A/B benchmark: run the same query set against two palazzo endpoints
 (different backends, aligned collections) and compare top-K recall.
 
 Outputs per-query overlap and rank-correlation, plus an aggregate verdict.
@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 
 DEFAULT_QUERIES = [
-    "memqdrant MCP server deploy",
+    "palazzo MCP server deploy",
     "mista Qdrant localhost",
     "giorno Ollama nomic-embed-text",
     "macOS Local Network Privacy TCC",

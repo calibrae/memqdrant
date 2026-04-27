@@ -73,18 +73,18 @@ impl Config {
     }
 }
 
-/// Where the gain analytics log lives. Defaults to `/var/lib/memqdrant/usage.jsonl`
+/// Where the gain analytics log lives. Defaults to `/var/lib/palazzo/usage.jsonl`
 /// (matches the systemd unit's ReadWritePaths) but is overridable for local dev
 /// or relocated deployments.
 fn usage_log_path() -> PathBuf {
-    std::env::var("MEMQDRANT_USAGE_LOG")
+    std::env::var("PALAZZO_USAGE_LOG")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/var/lib/memqdrant/usage.jsonl"))
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/palazzo/usage.jsonl"))
 }
 
 fn gain_enabled() -> bool {
     !matches!(
-        std::env::var("MEMQDRANT_GAIN_ENABLED").as_deref(),
+        std::env::var("PALAZZO_GAIN_ENABLED").as_deref(),
         Ok("0" | "false" | "no" | "off")
     )
 }
@@ -111,27 +111,27 @@ fn make_embedder(_cfg: &Config) -> Result<Embedder> {
 
 fn print_help() {
     eprintln!(
-        "memqdrant {} — MCP server over Qdrant memory palace
+        "palazzo {} — MCP server over Qdrant memory palace
 Usage:
-  memqdrant                      Serve MCP over stdio (default)
-  memqdrant serve [--bind ADDR]  Serve MCP over Streamable HTTP at POST /mcp
-                                 (default ADDR: 127.0.0.1:6334, override with MEMQDRANT_BIND)
-  memqdrant gain [--since-secs N] [--json]
-                                 Render the token-savings report from MEMQDRANT_USAGE_LOG.
-                                 Defaults to all-time text rendering; --json emits the structured Summary.
-  memqdrant --help               Show this message
+  palazzo                      Serve MCP over stdio (default)
+  palazzo serve [--bind ADDR]  Serve MCP over Streamable HTTP at POST /mcp
+                               (default ADDR: 127.0.0.1:6334, override with PALAZZO_BIND)
+  palazzo gain [--since-secs N] [--json]
+                               Render the token-savings report from PALAZZO_USAGE_LOG.
+                               Defaults to all-time text rendering; --json emits the structured Summary.
+  palazzo --help               Show this message
 
 Environment:
   OLLAMA_URL    (default http://localhost:11434)
   OLLAMA_MODEL  (default nomic-embed-text)
   QDRANT_URL    (default http://localhost:6333)
   COLLECTION    (default claude-memory)
-  MEMQDRANT_WAL (default ~/.memqdrant/wal.jsonl)
-  MEMQDRANT_BIND (default 127.0.0.1:6334 in serve mode)
-  MEMQDRANT_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
-  MEMQDRANT_USAGE_LOG (default /var/lib/memqdrant/usage.jsonl — gain analytics JSONL)
-  MEMQDRANT_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
-  RUST_LOG      (default memqdrant=info)
+  PALAZZO_WAL   (default ~/.palazzo/wal.jsonl)
+  PALAZZO_BIND  (default 127.0.0.1:6334 in serve mode)
+  PALAZZO_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
+  PALAZZO_USAGE_LOG (default /var/lib/palazzo/usage.jsonl — gain analytics JSONL)
+  PALAZZO_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
+  RUST_LOG      (default palazzo=info)
 ",
         env!("CARGO_PKG_VERSION")
     );
@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
     // Tracing goes to stderr only — stdout is the stdio MCP transport channel.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("memqdrant=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("palazzo=info")),
         )
         .with_writer(std::io::stderr)
         .with_ansi(false)
@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some("--version" | "-V") => {
-            println!("memqdrant {}", env!("CARGO_PKG_VERSION"));
+            println!("palazzo {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         Some(other) => {
@@ -209,7 +209,7 @@ async fn run_stdio() -> Result<()> {
         qdrant = %cfg.qdrant_url,
         collection = %cfg.collection,
         mode = "stdio",
-        "memqdrant starting"
+        "palazzo starting"
     );
 
     if let Err(e) = cfg.make_qdrant().ensure_indexes().await {
@@ -225,7 +225,7 @@ async fn run_stdio() -> Result<()> {
 }
 
 async fn run_http(rest: &[String]) -> Result<()> {
-    let mut bind = std::env::var("MEMQDRANT_BIND").unwrap_or_else(|_| "127.0.0.1:6334".into());
+    let mut bind = std::env::var("PALAZZO_BIND").unwrap_or_else(|_| "127.0.0.1:6334".into());
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
@@ -247,7 +247,7 @@ async fn run_http(rest: &[String]) -> Result<()> {
         collection = %cfg.collection,
         bind = %bind,
         mode = "streamable-http",
-        "memqdrant starting"
+        "palazzo starting"
     );
 
     if let Err(e) = cfg.make_qdrant().ensure_indexes().await {
@@ -257,10 +257,10 @@ async fn run_http(rest: &[String]) -> Result<()> {
     let ct = CancellationToken::new();
     let ct_child = ct.child_token();
     let mut http_config = StreamableHttpServerConfig::default().with_cancellation_token(ct_child);
-    match std::env::var("MEMQDRANT_ALLOWED_HOSTS") {
+    match std::env::var("PALAZZO_ALLOWED_HOSTS") {
         Ok(raw) if raw.trim() == "*" => {
             tracing::warn!(
-                "MEMQDRANT_ALLOWED_HOSTS=* — DNS rebinding protection DISABLED. Ensure the listener is behind a trusted reverse proxy or firewall."
+                "PALAZZO_ALLOWED_HOSTS=* — DNS rebinding protection DISABLED. Ensure the listener is behind a trusted reverse proxy or firewall."
             );
             http_config = http_config.disable_allowed_hosts();
         }
@@ -275,7 +275,7 @@ async fn run_http(rest: &[String]) -> Result<()> {
         }
         Err(_) => {
             tracing::info!(
-                "Host header allowlist defaults to localhost/127.0.0.1/::1 — set MEMQDRANT_ALLOWED_HOSTS to accept remote clients."
+                "Host header allowlist defaults to localhost/127.0.0.1/::1 — set PALAZZO_ALLOWED_HOSTS to accept remote clients."
             );
         }
     }

@@ -29,7 +29,7 @@ pub fn format_rfc3339(mut secs: u64) -> String {
 }
 
 /// Parse `YYYY-MM-DDTHH:MM:SSZ` into unix-epoch seconds. Accepts only the exact
-/// shape memqdrant itself produces (second-precision, Z-suffixed). Returns `None`
+/// shape palazzo itself produces (second-precision, Z-suffixed). Returns `None`
 /// on shape mismatch or out-of-range fields.
 pub fn parse_rfc3339(s: &str) -> Option<i64> {
     let b = s.as_bytes();
