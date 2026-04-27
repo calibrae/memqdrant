@@ -34,6 +34,7 @@ Neither upstream is vendored. Both are linked above; please follow and star thei
 | `palace_taxonomy` | Flat facet dump of wing / room / hall / category counts. |
 | `palace_check_duplicate` | Probe whether candidate text already exists above the 0.95 cosine threshold. |
 | `palace_supersede` | Replace one or more existing memories with a corrected version. Marks the old points with `valid_until`, `superseded_by`, `superseded_reason`; default `palace_find` hides them. |
+| `palace_gain` | Token-savings report. Aggregates the per-tool gain log and returns a `Summary` of how many tokens of agent context this server saved versus a hand-coded SSH+curl+jq equivalent. Optional `since` (RFC3339) and `include_text` flags. |
 
 Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per find.
 
@@ -86,6 +87,8 @@ All via environment variables:
 | `OLLAMA_URL` | `http://localhost:11434` | only read by the `ollama` backend |
 | `OLLAMA_MODEL` | `nomic-embed-text` | only read by the `ollama` backend |
 | `FASTEMBED_CACHE_DIR` | `~/.cache/fastembed` | only used by the `fastembed` backend |
+| `MEMQDRANT_USAGE_LOG` | `/var/lib/memqdrant/usage.jsonl` | append-only JSONL backing `palace_gain` |
+| `MEMQDRANT_GAIN_ENABLED` | `1` | set to `0`/`false`/`no`/`off` to disable per-call recording |
 | `RUST_LOG` | `memqdrant=info` | |
 
 Logging goes to **stderr only**. Stdout is the MCP transport — anything written there corrupts the JSON-RPC stream.
