@@ -91,10 +91,10 @@ struct UpsertBody {
 }
 
 #[derive(Debug, Serialize)]
-struct PointUpsert {
-    id: u64,
-    vector: Vec<f32>,
-    payload: Payload,
+pub struct PointUpsert {
+    pub id: u64,
+    pub vector: Vec<f32>,
+    pub payload: Payload,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,14 +136,24 @@ impl Qdrant {
     }
 
     pub async fn upsert(&self, id: u64, vector: Vec<f32>, payload: Payload) -> Result<()> {
+        self.upsert_batch(vec![PointUpsert {
+            id,
+            vector,
+            payload,
+        }])
+        .await
+    }
+
+    /// Upsert many points in one HTTP roundtrip. Caller is responsible for
+    /// ensuring the batch fits the Qdrant request-size limit (we cap at 256
+    /// items per `palace_store_batch` call upstream, which is well under the
+    /// default 30 MB limit for any sane payload size).
+    pub async fn upsert_batch(&self, points: Vec<PointUpsert>) -> Result<()> {
+        if points.is_empty() {
+            return Ok(());
+        }
         let url = self.url("/points?wait=true");
-        let body = UpsertBody {
-            points: vec![PointUpsert {
-                id,
-                vector,
-                payload,
-            }],
-        };
+        let body = UpsertBody { points };
         let resp = self
             .client
             .put(&url)

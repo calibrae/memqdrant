@@ -93,4 +93,53 @@ impl Embedder {
             resp.text().await.unwrap_or_default()
         ))
     }
+
+    /// Embed a batch of strings in one HTTP roundtrip via Ollama's batched
+    /// `/api/embed` endpoint. Falls back to a per-item legacy `/api/embeddings`
+    /// loop on 404 (older Ollama servers). Used by `palace_store_batch`.
+    pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let new_url = format!("{}/api/embed", self.base_url);
+        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let resp = self
+            .client
+            .post(&new_url)
+            .json(&EmbedReq {
+                model: &self.model,
+                input: refs,
+            })
+            .send()
+            .await
+            .with_context(|| format!("POST {new_url}"))?;
+
+        if resp.status().is_success() {
+            let body: EmbedResp = resp.json().await.context("decode /api/embed batch")?;
+            if body.embeddings.len() != texts.len() {
+                return Err(anyhow!(
+                    "ollama returned {} embeddings for {} inputs",
+                    body.embeddings.len(),
+                    texts.len()
+                ));
+            }
+            return Ok(body.embeddings);
+        }
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            tracing::debug!("/api/embed 404, falling back to per-item /api/embeddings");
+            let mut out = Vec::with_capacity(texts.len());
+            for text in texts {
+                out.push(self.embed(text).await?);
+            }
+            return Ok(out);
+        }
+
+        Err(anyhow!(
+            "embed batch request to {} failed: {} {}",
+            new_url,
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ))
+    }
 }

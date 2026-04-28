@@ -290,6 +290,64 @@ def main():
         assert "superseded by smoke test v0.5" in recalled_old[0]["superseded_reason"]
         print("recall exposes temporal metadata ok")
 
+        # 15. palace_store_batch round-trips a batch with mixed shapes:
+        #     [0] new memory, [1] new memory, [2] EXACT duplicate of one we
+        #     just stored above (palace_supersede already wrote palazzo-test
+        #     content). Verify per-item statuses + counts.
+        batch_resp = client.call(
+            "palace_store_batch",
+            {
+                "items": [
+                    {
+                        "text": "palazzo smoke batch item alpha",
+                        "category": "project-memory",
+                        "wing": "projects",
+                        "room": "palazzo",
+                        "hall": "events",
+                        "session": "smoke-test",
+                    },
+                    {
+                        "text": "palazzo smoke batch item beta",
+                        "category": "project-memory",
+                        "wing": "projects",
+                        "room": "palazzo",
+                        "hall": "events",
+                        "session": "smoke-test",
+                    },
+                    {
+                        # Same text as the supersede new point — should dedup.
+                        "text": "palazzo smoke test — corrected entry, v0.5 supersede path works.",
+                        "category": "project-memory",
+                        "wing": "projects",
+                        "room": "palazzo",
+                        "hall": "events",
+                    },
+                ]
+            },
+        )
+        print("batch:", batch_resp["counts"])
+        items = batch_resp["items"]
+        assert len(items) == 3, f"expected 3 items, got {len(items)}"
+        assert items[0]["ok"] is True and items[0].get("duplicate_of") is None
+        assert items[1]["ok"] is True and items[1].get("duplicate_of") is None
+        assert items[2]["ok"] is True and items[2].get("duplicate_of") == new_point_id
+        assert batch_resp["counts"]["stored"] == 2
+        assert batch_resp["counts"]["duplicates_returned"] == 1
+        # Newly-stored points should now be discoverable.
+        alpha_id = items[0]["id"]
+        recalled_alpha = client.call("palace_recall", {"ids": [alpha_id]})
+        assert recalled_alpha[0]["text"] == "palazzo smoke batch item alpha"
+        print("palace_store_batch ok")
+
+        # 16. batch with empty items array → error
+        try:
+            client.call("palace_store_batch", {"items": []})
+        except AssertionError as e:
+            assert "empty" in str(e).lower(), f"unexpected error: {e}"
+            print("empty batch rejected ok")
+        else:
+            raise AssertionError("empty batch should have failed")
+
         print("\n✅ all smoke checks passed")
     finally:
         proc.stdin.close()

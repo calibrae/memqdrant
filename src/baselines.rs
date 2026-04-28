@@ -38,6 +38,11 @@ pub const BASELINES: &[(&str, u32)] = &[
     // Write-side: SSH + Ollama embed + Qdrant POST + ack noise.
     ("palace_store", 1900),
     ("palace_supersede", 2200),
+    // Bulk write: the SSH+curl equivalent for N items is N copies of the
+    // single-store dance plus per-item context handoff. We pick a baseline
+    // that reflects a typical batch (~50 items × ~1500 tokens of saved
+    // overhead per item); recalibrate after a couple of real bulk loads.
+    ("palace_store_batch", 75_000),
     // Self-call: zero by definition (the gain summary is the gain).
     ("palace_gain", 0),
 ];

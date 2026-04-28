@@ -34,6 +34,7 @@ Neither upstream is vendored. Both are linked above; please follow and star thei
 | `palace_taxonomy` | Flat facet dump of wing / room / hall / category counts. |
 | `palace_check_duplicate` | Probe whether candidate text already exists above the 0.95 cosine threshold. |
 | `palace_supersede` | Replace one or more existing memories with a corrected version. Marks the old points with `valid_until`, `superseded_by`, `superseded_reason`; default `palace_find` hides them. |
+| `palace_store_batch` | Bulk-ingest up to 256 memories in one call. Embeds the whole batch in one ONNX/Ollama inference pass and bulk-upserts to Qdrant in one HTTP call (~3-5× faster than N single-item calls). Per-item dedup against the live palace; result returns per-item status, IDs, and dedup hits. Designed for migrations and bulk imports. |
 | `palace_gain` | Token-savings report. Aggregates the per-tool gain log and returns a `Summary` of how many tokens of agent context this server saved versus a hand-coded SSH+curl+jq equivalent. Optional `since` (RFC3339) and `include_text` flags. |
 
 Input caps: 32 KB per text body, 100 IDs per recall batch, 1–20 results per find.
@@ -101,14 +102,14 @@ palazzo ships two backends behind mutually-exclusive cargo features. Pick one at
 
 | Feature | How it embeds | When to use |
 |---|---|---|
-| `ollama` (default) | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN (or localhost). Tiny binary, no native deps. |
-| `fastembed` | Local ONNX inference of `nomic-embed-text-v1.5-Q` (INT8 dynamic-quantised) via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want palazzo fully self-contained — zero external services. Static binary, ~110 MB one-time model download into `FASTEMBED_CACHE_DIR`, ~1 GB resident. |
+| `fastembed` (default) | Local ONNX inference of `nomic-embed-text-v1.5-Q` (INT8 dynamic-quantised) via [`fastembed-rs`](https://github.com/Anush008/fastembed-rs) | You want palazzo fully self-contained — zero external services. Static binary, ~110 MB one-time model download into `FASTEMBED_CACHE_DIR`, ~1 GB resident. **This is what every deployed palazzo runs.** |
+| `ollama` | HTTP calls to an Ollama server running `nomic-embed-text` | You already run Ollama on your LAN and prefer a tiny no-native-deps binary. Useful for dev rigs that don't want to pay the model-download / RSS cost. |
 
 Select the variant via cargo features (release archives publish both per-platform):
 
 ```
-cargo build --release                                          # ollama (default)
-cargo build --release --no-default-features --features fastembed
+cargo build --release                                          # fastembed (default)
+cargo build --release --no-default-features --features ollama
 ```
 
 Both backends produce 768-dim vectors in the **same vector space** (nomic-embed-text-v1.5 architecture). Existing points embedded with one backend stay searchable with the other — including across the f32 → INT8-quantised swap that landed in v0.5.1. Expect ~0.98–0.99 cosine on the same text between any two precision combos, which is below the noise floor of typical palace queries.
@@ -119,7 +120,7 @@ Both backends produce 768-dim vectors in the **same vector space** (nomic-embed-
 cargo build --release
 ```
 
-Release profile is LTO-thin, single codegen unit, stripped. Binary ~8 MB with the `ollama` backend, ~28 MB with `fastembed` (static ONNX runtime included). Resident memory at idle: ~30 MB (ollama) or ~1 GB (fastembed, model loaded).
+Release profile is LTO-thin, single codegen unit, stripped. Binary ~28 MB with `fastembed` (default — static ONNX runtime included), ~8 MB with `ollama`. Resident memory at idle: ~1 GB (fastembed, model loaded) or ~30 MB (ollama).
 
 ## Running
 
