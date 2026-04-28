@@ -136,6 +136,7 @@ Environment:
   PALAZZO_WAL   (default ~/.palazzo/wal.jsonl)
   PALAZZO_BIND  (default 127.0.0.1:6334 in serve mode)
   PALAZZO_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
+  PALAZZO_MAX_INGEST_BYTES (default 67108864 = 64 MiB — body cap for POST /ingest; 32KB/item still enforced)
   PALAZZO_USAGE_LOG (default /var/lib/palazzo/usage.jsonl — gain analytics JSONL)
   PALAZZO_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
   RUST_LOG      (default palazzo=info)
@@ -476,10 +477,19 @@ async fn run_http(rest: &[String]) -> Result<()> {
         http_config,
     );
 
+    let max_ingest = std::env::var("PALAZZO_MAX_INGEST_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(64 * 1024 * 1024);
+    tracing::info!(max_ingest_bytes = max_ingest, "POST /ingest body cap");
+
+    let ingest_route = axum::Router::new()
+        .route("/ingest", axum::routing::post(ingest_handler))
+        .layer(axum::extract::DefaultBodyLimit::max(max_ingest))
+        .with_state(ingest_palace);
     let router = axum::Router::new()
         .nest_service("/mcp", service)
-        .route("/ingest", axum::routing::post(ingest_handler))
-        .with_state(ingest_palace);
+        .merge(ingest_route);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("bind {bind}"))?;
