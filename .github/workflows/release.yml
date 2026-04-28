@@ -71,7 +71,7 @@ jobs:
             echo "args=--no-default-features --features fastembed" >> "$GITHUB_OUTPUT"
             echo "suffix=-fastembed" >> "$GITHUB_OUTPUT"
           else
-            echo "args=" >> "$GITHUB_OUTPUT"
+            echo "args=--no-default-features --features ollama" >> "$GITHUB_OUTPUT"
             echo "suffix=" >> "$GITHUB_OUTPUT"
           fi
 
