@@ -303,10 +303,7 @@ async fn run_ingest(rest: &[String]) -> Result<()> {
     } else {
         eprintln!(
             "ingest: total={total} stored={} duplicates_returned={} skipped_duplicates={} failed={}",
-            totals.stored,
-            totals.duplicates_returned,
-            totals.skipped_duplicates,
-            totals.failed,
+            totals.stored, totals.duplicates_returned, totals.skipped_duplicates, totals.failed,
         );
         if totals.failed > 0 {
             for entry in all_entries.iter().filter(|e| !e.ok) {
