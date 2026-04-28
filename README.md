@@ -166,6 +166,18 @@ claude mcp add --transport http palazzo http://your-server:6334/mcp
 
 Bind address can also be set via `PALAZZO_BIND`. Default is `127.0.0.1:6334`.
 
+### Bulk ingest over HTTP (`POST /ingest`)
+
+The `serve` mode exposes a sibling REST endpoint alongside `/mcp`:
+
+```
+curl -X POST http://palazzo-host:6334/ingest \
+  -H 'Content-Type: application/x-ndjson' \
+  --data-binary @batch.jsonl
+```
+
+Same backend as `palace_store_batch` — embed, dedup, WAL, upsert — but delivered as a plain HTTP request. When invoked from an MCP client via `Bash(curl)`, the agent transcript only carries the curl command and the JSON response summary; the file's bytes flow through curl's body stream and never touch the LLM tokenizer. Use this for any bulk migration where the source data already exists on disk or a reachable URL. Same `PALAZZO_ALLOWED_HOSTS` allowlist as `/mcp`. Returns `400` on empty body or parse error, `500` on backend error, `200 OK` with the full `BatchStoreResult` JSON on success.
+
 ### Bulk ingest from a file (`palazzo ingest`)
 
 ```

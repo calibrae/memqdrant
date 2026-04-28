@@ -114,7 +114,8 @@ fn print_help() {
         "palazzo {} — MCP server over Qdrant memory palace
 Usage:
   palazzo                      Serve MCP over stdio (default)
-  palazzo serve [--bind ADDR]  Serve MCP over Streamable HTTP at POST /mcp
+  palazzo serve [--bind ADDR]  Serve MCP over Streamable HTTP at POST /mcp,
+                               and a sibling NDJSON bulk-ingest endpoint at POST /ingest.
                                (default ADDR: 127.0.0.1:6334, override with PALAZZO_BIND)
   palazzo gain [--since-secs N] [--json]
                                Render the token-savings report from PALAZZO_USAGE_LOG.
@@ -319,6 +320,73 @@ async fn run_ingest(rest: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// POST /ingest handler. Accepts NDJSON in the body — one StoreBatchItem per line.
+/// Returns the aggregated BatchStoreResult as JSON.
+///
+/// The texts flow through the HTTP body and never need to enter an MCP transcript.
+/// Use this from agents for bulk migrations: the Bash(curl) invocation only puts
+/// the curl command line in the conversation, not the file payload.
+async fn ingest_handler(
+    axum::extract::State(palace): axum::extract::State<std::sync::Arc<Palace>>,
+    body: String,
+) -> Result<axum::Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+    let mut items: Vec<StoreBatchItem> = Vec::new();
+    for (lineno, line) in body.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        match serde_json::from_str::<StoreBatchItem>(trimmed) {
+            Ok(it) => items.push(it),
+            Err(e) => {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("parse error on line {}: {e}", lineno + 1),
+                ));
+            }
+        }
+    }
+    if items.is_empty() {
+        return Err((
+            axum::http::StatusCode::BAD_REQUEST,
+            "empty body — expected NDJSON of StoreBatchItem records".into(),
+        ));
+    }
+
+    let total = items.len();
+    let mut all_entries: Vec<crate::mcp::BatchStoreEntry> = Vec::with_capacity(total);
+    let mut totals = crate::mcp::BatchCounts::default();
+    let mut base_index: u32 = 0;
+    while !items.is_empty() {
+        let take = items.len().min(MAX_STORE_BATCH);
+        let chunk: Vec<StoreBatchItem> = items.drain(..take).collect();
+        let args = StoreBatchArgs {
+            items: chunk,
+            skip_duplicates: None,
+        };
+        let result = palace.do_store_batch(args).await.map_err(|e| {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                format!("{e:#}"),
+            )
+        })?;
+        totals.stored += result.counts.stored;
+        totals.duplicates_returned += result.counts.duplicates_returned;
+        totals.skipped_duplicates += result.counts.skipped_duplicates;
+        totals.failed += result.counts.failed;
+        for mut entry in result.items {
+            entry.index += base_index;
+            all_entries.push(entry);
+        }
+        base_index += MAX_STORE_BATCH as u32;
+    }
+    let result = crate::mcp::BatchStoreResult {
+        items: all_entries,
+        counts: totals,
+    };
+    Ok(axum::Json(serde_json::to_value(&result).unwrap()))
+}
+
 async fn run_stdio() -> Result<()> {
     let cfg = Config::from_env();
     tracing::info!(
@@ -397,17 +465,25 @@ async fn run_http(rest: &[String]) -> Result<()> {
         }
     }
 
+    // Pre-built Palace shared by /ingest. /mcp keeps its own per-session factory
+    // because StreamableHttpService wants a fresh service per session.
+    let ingest_palace = std::sync::Arc::new(cfg.make_palace()?);
+    let cfg = std::sync::Arc::new(cfg);
+    let mcp_cfg = cfg.clone();
     let service = StreamableHttpService::new(
-        move || cfg.make_palace().map_err(std::io::Error::other),
+        move || mcp_cfg.make_palace().map_err(std::io::Error::other),
         LocalSessionManager::default().into(),
         http_config,
     );
 
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .route("/ingest", axum::routing::post(ingest_handler))
+        .with_state(ingest_palace);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("bind {bind}"))?;
-    tracing::info!("listening on {bind} at POST /mcp");
+    tracing::info!("listening on {bind}: POST /mcp (MCP), POST /ingest (NDJSON bulk)");
 
     let shutdown = ct.clone();
     axum::serve(listener, router)
