@@ -176,7 +176,18 @@ curl -X POST http://palazzo-host:6334/ingest \
   --data-binary @batch.jsonl
 ```
 
-Same backend as `palace_store_batch` — embed, dedup, WAL, upsert — but delivered as a plain HTTP request. When invoked from an MCP client via `Bash(curl)`, the agent transcript only carries the curl command and the JSON response summary; the file's bytes flow through curl's body stream and never touch the LLM tokenizer. Use this for any bulk migration where the source data already exists on disk or a reachable URL. Same `PALAZZO_ALLOWED_HOSTS` allowlist as `/mcp`. Returns `400` on empty body or parse error, `500` on backend error, `200 OK` with the full `BatchStoreResult` JSON on success.
+Same backend as `palace_store_batch` — embed, dedup, WAL, upsert — but delivered as a plain HTTP request. When invoked from an MCP client via `Bash(curl)`, the agent transcript only carries the curl command and the JSON response summary; the file's bytes flow through curl's body stream and never touch the LLM tokenizer. Use this for any bulk migration where the source data already exists on disk or a reachable URL. Same `PALAZZO_ALLOWED_HOSTS` allowlist as `/mcp`.
+
+The response is **streamed NDJSON** — one progress line per processed batch (default 256 items each), then a final `{"done": true, ...}` line:
+
+```
+{"chunk":0,"items_in_chunk":256,"counts":{"stored":256,...},"running":{"stored":256,...}}
+{"chunk":1,"items_in_chunk":256,"counts":{...},"running":{"stored":512,...}}
+{"chunk":2,"items_in_chunk":88,"counts":{...},"running":{"stored":600,...}}
+{"done":true,"total":600,"counts":{"stored":600,"duplicates_returned":0,"skipped_duplicates":0,"failed":0}}
+```
+
+Use `curl -N` to disable client-side buffering and watch progress live. Errors during processing emit a `{"chunk":N,"error":"..."}` line and close the stream. Body parse failures still return `400` with a plain-text body before any streaming starts.
 
 ### Bulk ingest from a file (`palazzo ingest`)
 
