@@ -95,7 +95,8 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=no  # ONNX runtime needs JIT
+# ONNX runtime needs writable+executable pages, so MemoryDenyWriteExecute is off.
+MemoryDenyWriteExecute=no
 RestrictRealtime=yes
 RestrictNamespaces=yes
 SystemCallArchitectures=native
