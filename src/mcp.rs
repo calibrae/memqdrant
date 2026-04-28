@@ -927,7 +927,10 @@ impl ServerHandler for Palace {
             "palazzo — Cali's memory palace over MCP. \
              Every memory has a wing (projects/infrastructure/nexpublica/personal/career/vibe), \
              a room (free-text project or topic), and a hall (facts/events/decisions/discoveries/preferences). \
-             Tools: palace_store, palace_store_batch, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede, palace_gain.".to_string(),
+             Tools: palace_store, palace_store_batch, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede, palace_gain. \
+             For bulk migrations of pre-existing data (>~10K tokens of payload), prefer the sibling REST endpoint POST /ingest on the same host:port \
+             (Content-Type: application/x-ndjson, body = JSONL of palace_store items). Invoke via Bash(curl --data-binary @file) — the bytes flow through curl's body and never enter the MCP transcript, \
+             unlike palace_store_batch tool args which do. Same backend (embed, dedup, WAL, upsert), zero context cost for the payload.".to_string(),
         )
     }
 }
