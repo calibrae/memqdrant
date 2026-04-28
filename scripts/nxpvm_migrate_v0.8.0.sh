@@ -56,6 +56,7 @@ echo "==> 6. rewrite env file (MEMQDRANT_* -> PALAZZO_*, paths)"
 if [ -f /etc/palazzo/env ]; then
   sudo sed -i \
     -e 's|MEMQDRANT_|PALAZZO_|g' \
+    -e 's|memqdrant=info|palazzo=info|g' \
     -e 's|/var/lib/memqdrant|/var/lib/palazzo|g' \
     -e 's|/opt/memqdrant|/opt/palazzo|g' \
     -e 's|/etc/memqdrant|/etc/palazzo|g' \
@@ -79,7 +80,7 @@ Type=simple
 User=palazzo
 Group=palazzo
 EnvironmentFile=/etc/palazzo/env
-ExecStart=/opt/palazzo/bin/palazzo
+ExecStart=/opt/palazzo/bin/palazzo serve
 Restart=on-failure
 RestartSec=3
 
@@ -111,7 +112,7 @@ sleep 2
 sudo systemctl status palazzo.service --no-pager | head -20 || true
 
 echo "==> 10. health probe"
-PORT=$(grep -E '^PALAZZO_BIND|^PALAZZO_PORT|^PORT=' /etc/palazzo/env | head -1 | cut -d= -f2 | tr -d '"' | sed 's|.*:||')
+PORT=$(sudo grep -E '^PALAZZO_BIND|^PALAZZO_PORT|^PORT=' /etc/palazzo/env | head -1 | cut -d= -f2 | tr -d '"' | sed 's|.*:||')
 PORT=${PORT:-8089}
 sleep 2
 curl -fsS "http://127.0.0.1:${PORT}/health" 2>/dev/null && echo "  health ok" || echo "  (no /health endpoint — check journalctl -u palazzo -n 50)"
