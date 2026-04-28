@@ -348,6 +348,52 @@ def main():
         else:
             raise AssertionError("empty batch should have failed")
 
+        # 17. `palazzo ingest` CLI subcommand: same backend, no MCP transcript.
+        # Two fresh items + one exact-duplicate of #15's alpha. Verify counts
+        # via --json, then recall the new items through the live MCP session.
+        ingest_path = os.path.join("/tmp", f"palazzo-ingest-smoke-{COLLECTION}.jsonl")
+        with open(ingest_path, "w") as f:
+            f.write(json.dumps({
+                "text": "palazzo ingest CLI gamma — smoke item",
+                "category": "project-memory", "wing": "projects",
+                "room": "palazzo", "hall": "events",
+            }) + "\n")
+            f.write(json.dumps({
+                "text": "palazzo ingest CLI delta — smoke item",
+                "category": "project-memory", "wing": "projects",
+                "room": "palazzo", "hall": "events",
+            }) + "\n")
+            f.write(json.dumps({
+                # exact duplicate of step-15 batch alpha
+                "text": "palazzo smoke batch item alpha",
+                "category": "project-memory", "wing": "projects",
+                "room": "palazzo", "hall": "events",
+            }) + "\n")
+        try:
+            ing_env = env.copy()
+            ing_env["RUST_LOG"] = "palazzo=warn"
+            ing = subprocess.run(
+                [BIN, "ingest", "--file", ingest_path, "--json"],
+                env=ing_env, capture_output=True, check=True,
+            )
+            ing_resp = json.loads(ing.stdout)
+            print("ingest:", ing_resp["counts"])
+            assert ing_resp["counts"]["stored"] == 2, ing_resp["counts"]
+            assert ing_resp["counts"]["duplicates_returned"] == 1, ing_resp["counts"]
+            assert len(ing_resp["items"]) == 3
+            new_ids = [it["id"] for it in ing_resp["items"][:2]]
+            recalled_ingest = client.call("palace_recall", {"ids": new_ids})
+            assert {r["text"] for r in recalled_ingest} == {
+                "palazzo ingest CLI gamma — smoke item",
+                "palazzo ingest CLI delta — smoke item",
+            }, recalled_ingest
+            print("palazzo ingest CLI ok")
+        finally:
+            try:
+                os.remove(ingest_path)
+            except FileNotFoundError:
+                pass
+
         print("\n✅ all smoke checks passed")
     finally:
         proc.stdin.close()

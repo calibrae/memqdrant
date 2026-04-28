@@ -166,6 +166,15 @@ claude mcp add --transport http palazzo http://your-server:6334/mcp
 
 Bind address can also be set via `PALAZZO_BIND`. Default is `127.0.0.1:6334`.
 
+### Bulk ingest from a file (`palazzo ingest`)
+
+```
+palazzo ingest --file batch.jsonl
+palazzo ingest --json < batch.jsonl
+```
+
+Same backend as `palace_store_batch` — embedding, dedup, WAL, upsert — but the texts never round-trip through the MCP transcript. Use this from migration scripts when the agent context can't afford the per-call cost of carrying the payloads. Input is JSON-Lines (`{"text":..., "category":..., "wing":..., "room":..., "hall":...}` per line, blank/`#`-prefixed lines ignored). Items are chunked into `MAX_STORE_BATCH` (256) groups and processed sequentially. Default output is a one-line summary on stderr; `--json` emits the full per-item result on stdout.
+
 #### Deploy as a systemd service
 
 The `deploy/` directory contains a hardened systemd unit, an env-file template, and an installer. On Debian / Ubuntu / any systemd host:

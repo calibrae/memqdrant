@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 use crate::embed::Embedder;
-use crate::mcp::Palace;
+use crate::mcp::{MAX_STORE_BATCH, Palace, StoreBatchArgs, StoreBatchItem};
 use crate::qdrant::Qdrant;
 use crate::wal::Wal;
 
@@ -119,6 +119,12 @@ Usage:
   palazzo gain [--since-secs N] [--json]
                                Render the token-savings report from PALAZZO_USAGE_LOG.
                                Defaults to all-time text rendering; --json emits the structured Summary.
+  palazzo ingest [--file PATH] [--json]
+                               Bulk-ingest JSONL of palace_store_batch items. One item per line:
+                               {{\"text\":...,\"category\":...,\"wing\":...,\"room\":...,\"hall\":...}}.
+                               Reads stdin when --file is omitted. Chunks into MAX_STORE_BATCH groups.
+                               Bypasses the MCP transcript — use this instead of palace_store_batch
+                               when the agent context can't afford the round-trip cost of the texts.
   palazzo --help               Show this message
 
 Environment:
@@ -153,6 +159,7 @@ async fn main() -> Result<()> {
         None => run_stdio().await,
         Some("serve") => run_http(&args[1..]).await,
         Some("gain") => run_gain(&args[1..]),
+        Some("ingest") => run_ingest(&args[1..]).await,
         Some("--help" | "-h") => {
             print_help();
             Ok(())
@@ -198,6 +205,119 @@ fn run_gain(rest: &[String]) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
         print!("{}", mcp_gain::render_text(&summary, &baselines::header()));
+    }
+    Ok(())
+}
+
+async fn run_ingest(rest: &[String]) -> Result<()> {
+    use std::io::Read;
+
+    let mut path: Option<PathBuf> = None;
+    let mut as_json = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--file" => {
+                path = Some(PathBuf::from(
+                    rest.get(i + 1)
+                        .ok_or_else(|| anyhow::anyhow!("--file requires a path"))?,
+                ));
+                i += 2;
+            }
+            "--json" => {
+                as_json = true;
+                i += 1;
+            }
+            other => anyhow::bail!("unknown ingest argument: {other}"),
+        }
+    }
+
+    let mut raw = String::new();
+    match path.as_ref() {
+        Some(p) => {
+            std::fs::File::open(p)
+                .with_context(|| format!("open {p:?}"))?
+                .read_to_string(&mut raw)?;
+        }
+        None => {
+            std::io::stdin().read_to_string(&mut raw)?;
+        }
+    }
+    let mut items: Vec<StoreBatchItem> = Vec::new();
+    for (lineno, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let item: StoreBatchItem = serde_json::from_str(trimmed)
+            .with_context(|| format!("parse item on line {}", lineno + 1))?;
+        items.push(item);
+    }
+    if items.is_empty() {
+        anyhow::bail!("no items to ingest (input had no JSONL records)");
+    }
+
+    let cfg = Config::from_env();
+    tracing::info!(
+        backend = BACKEND,
+        qdrant = %cfg.qdrant_url,
+        collection = %cfg.collection,
+        items = items.len(),
+        mode = "ingest",
+        "palazzo ingest"
+    );
+    if let Err(e) = cfg.make_qdrant().ensure_indexes().await {
+        tracing::warn!("ensure_indexes: {e:#}");
+    }
+    let palace = cfg.make_palace()?;
+
+    let total = items.len();
+    let mut all_entries: Vec<crate::mcp::BatchStoreEntry> = Vec::with_capacity(total);
+    let mut totals = crate::mcp::BatchCounts::default();
+    let mut base_index: u32 = 0;
+    while !items.is_empty() {
+        let take = items.len().min(MAX_STORE_BATCH);
+        let chunk: Vec<StoreBatchItem> = items.drain(..take).collect();
+        let args = StoreBatchArgs {
+            items: chunk,
+            skip_duplicates: None,
+        };
+        let result = palace.do_store_batch(args).await?;
+        totals.stored += result.counts.stored;
+        totals.duplicates_returned += result.counts.duplicates_returned;
+        totals.skipped_duplicates += result.counts.skipped_duplicates;
+        totals.failed += result.counts.failed;
+        for mut entry in result.items {
+            entry.index += base_index;
+            all_entries.push(entry);
+        }
+        base_index += MAX_STORE_BATCH as u32;
+    }
+
+    if as_json {
+        let result = crate::mcp::BatchStoreResult {
+            items: all_entries,
+            counts: totals,
+        };
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        eprintln!(
+            "ingest: total={total} stored={} duplicates_returned={} skipped_duplicates={} failed={}",
+            totals.stored,
+            totals.duplicates_returned,
+            totals.skipped_duplicates,
+            totals.failed,
+        );
+        if totals.failed > 0 {
+            for entry in all_entries.iter().filter(|e| !e.ok) {
+                eprintln!(
+                    "  [{}] FAILED: {}",
+                    entry.index,
+                    entry.error.as_deref().unwrap_or("(no error message)"),
+                );
+            }
+            anyhow::bail!("{} item(s) failed", totals.failed);
+        }
     }
     Ok(())
 }

@@ -30,7 +30,7 @@ const MAX_SUPERSEDES: usize = 50;
 /// Cap on items per `palace_store_batch` call. At 32 KB/text * 256 items the upper bound
 /// is ~8 MB request payload — well under any sensible HTTP limit and tractable for the
 /// embedder in one batch. Bigger bulk loads should issue multiple calls.
-const MAX_STORE_BATCH: usize = 256;
+pub const MAX_STORE_BATCH: usize = 256;
 
 #[derive(Clone)]
 pub struct Palace {
@@ -408,7 +408,10 @@ impl Palace {
         })
     }
 
-    async fn do_store_batch(&self, args: StoreBatchArgs) -> anyhow::Result<BatchStoreResult> {
+    pub(crate) async fn do_store_batch(
+        &self,
+        args: StoreBatchArgs,
+    ) -> anyhow::Result<BatchStoreResult> {
         if args.items.is_empty() {
             anyhow::bail!("items is empty — nothing to store");
         }
@@ -960,45 +963,45 @@ enum DedupStatus {
 }
 
 #[derive(Debug, Default, Serialize)]
-struct BatchCounts {
+pub(crate) struct BatchCounts {
     /// Items newly written to Qdrant.
-    stored: u32,
+    pub stored: u32,
     /// Duplicate items returned with the existing point's ID.
-    duplicates_returned: u32,
+    pub duplicates_returned: u32,
     /// Duplicate items that the caller asked to skip silently.
-    skipped_duplicates: u32,
+    pub skipped_duplicates: u32,
     /// Items that failed validation, embedding, or upsert.
-    failed: u32,
+    pub failed: u32,
 }
 
 #[derive(Debug, Serialize)]
-struct BatchStoreEntry {
-    index: u32,
-    ok: bool,
+pub(crate) struct BatchStoreEntry {
+    pub index: u32,
+    pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<u64>,
+    pub id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    duplicate_of: Option<u64>,
+    pub duplicate_of: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    matched_score: Option<f32>,
+    pub matched_score: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
+    pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    wing: Option<String>,
+    pub wing: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    room: Option<String>,
+    pub room: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    hall: Option<String>,
+    pub hall: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    timestamp: Option<String>,
+    pub timestamp: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct BatchStoreResult {
-    items: Vec<BatchStoreEntry>,
-    counts: BatchCounts,
+pub(crate) struct BatchStoreResult {
+    pub items: Vec<BatchStoreEntry>,
+    pub counts: BatchCounts,
 }
 
 fn facet_map(items: &[(String, u64)]) -> serde_json::Value {
