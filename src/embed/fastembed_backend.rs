@@ -49,18 +49,30 @@ impl Embedder {
             .ok_or_else(|| anyhow!("fastembed returned zero embeddings"))
     }
 
-    /// Embed a batch of strings in one ONNX inference pass. Lets fastembed/ort
-    /// pack inputs into one matmul instead of paying per-call overhead — the
-    /// per-item cost drops from ~80 ms to ~25 ms amortised on AVX2 hardware.
-    /// Used by `palace_store_batch`.
+    /// Embed a batch of strings, sub-chunked so the ONNX runtime arenas stay
+    /// bounded. Empirically a single batch of 256 long sequences peaks at ~6 GB
+    /// RSS on an AVX2 worker — well past what a small VM can absorb. We chunk
+    /// into groups of `FASTEMBED_BATCH_CHUNK` (default 16, override with the
+    /// env var of the same name) and concatenate; per-call ONNX overhead is
+    /// dwarfed by the matmul itself, so throughput barely moves.
     pub async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let chunk_size: usize = std::env::var("FASTEMBED_BATCH_CHUNK")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(16);
+        let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
         let mut guard = self.inner.lock().await;
-        let refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        guard
-            .embed(refs, None)
-            .map_err(|e| anyhow!("fastembed batch: {e}"))
+        for chunk in texts.chunks(chunk_size) {
+            let refs: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+            let mut vecs = guard
+                .embed(refs, None)
+                .map_err(|e| anyhow!("fastembed batch: {e}"))?;
+            out.append(&mut vecs);
+        }
+        Ok(out)
     }
 }

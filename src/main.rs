@@ -137,6 +137,7 @@ Environment:
   PALAZZO_BIND  (default 127.0.0.1:6334 in serve mode)
   PALAZZO_ALLOWED_HOSTS (default localhost,127.0.0.1,::1 — set to \"*\" to disable DNS rebinding check)
   PALAZZO_MAX_INGEST_BYTES (default 67108864 = 64 MiB — body cap for POST /ingest; 32KB/item still enforced)
+  FASTEMBED_BATCH_CHUNK (default 16 — fastembed sub-batch size; smaller = lower RSS, larger = faster)
   PALAZZO_USAGE_LOG (default /var/lib/palazzo/usage.jsonl — gain analytics JSONL)
   PALAZZO_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
   RUST_LOG      (default palazzo=info)
