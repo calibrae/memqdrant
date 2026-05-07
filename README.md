@@ -1,4 +1,11 @@
-# palazzo
+<p align="center">
+  <img src=".assets/hero.png" alt="palazzo" width="100%">
+</p>
+
+<h1 align="center">
+  <img src=".assets/logo.png" alt="" width="64" align="middle">
+  &nbsp;palazzo
+</h1>
 
 MCP server exposing a Qdrant-backed memory palace — typed wings, rooms, and halls instead of a generic blob store.
 
