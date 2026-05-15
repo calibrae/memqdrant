@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
@@ -12,18 +13,27 @@ use tokio::sync::Mutex;
 ///
 /// The ONNX runtime's CPU arena grows monotonically with cumulative inference
 /// work and never shrinks — a long-lived process creeps from ~440 MB cold to
-/// multiple GB. To bound that, the embedder optionally **recycles**: when
-/// process RSS crosses `FASTEMBED_RECYCLE_RSS_MB` (default 1500, `0` disables),
-/// a fresh `TextEmbedding` is built off-lock and swapped in. In-flight embeds
-/// keep using the old session until the instant pointer-swap, so inserts and
-/// reads are never stalled by a recycle.
+/// multiple GB. To bound that, a background watcher recycles the underlying
+/// `TextEmbedding` when **both** conditions hold:
+///
+///   * process RSS exceeds `FASTEMBED_RECYCLE_RSS_MB` (default 1500, 0 disables)
+///   * no embed has finished in the last `FASTEMBED_RECYCLE_IDLE_SECS` (default 30)
+///
+/// The idle gate is the important part — Cali's hard requirement: never
+/// recycle while MCP traffic is in flight. The watcher polls every 10 s and
+/// only fires when both predicates are true, so a burst of requests delays
+/// the recycle until the next lull.
+///
+/// The actual recycle builds a fresh `TextEmbedding` off-lock (model loads
+/// from the on-disk cache, ~0.5-1 s) and only takes the `Mutex` for the
+/// pointer swap, which is sub-millisecond. Even if a request DOES arrive
+/// during the rebuild window, it just blocks on the lock for that single ms.
 #[derive(Clone)]
 pub struct Embedder {
     inner: Arc<Mutex<TextEmbedding>>,
-    /// RSS threshold in MiB above which the embedder recycles. 0 = disabled.
-    recycle_rss_mb: u64,
-    /// Single-flight guard — true while a recycle is in progress.
-    recycling: Arc<AtomicBool>,
+    /// Unix-seconds timestamp of the last embed completion. Read by the
+    /// background watcher to decide whether traffic is quiet.
+    last_embed_at: Arc<AtomicU64>,
 }
 
 /// Build a fresh `TextEmbedding`. Blocking — loads the model from the on-disk
@@ -49,28 +59,45 @@ fn current_rss_mb() -> Option<u64> {
     Some(resident_pages * page_size / (1024 * 1024))
 }
 
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl Embedder {
     /// Construct a new embedder. Blocks to load / download the model — do this
-    /// once at startup, not per request.
+    /// once at startup, not per request. Spawns a background watcher that
+    /// recycles the embedder during idle windows when RSS has grown too much.
     pub fn new() -> Result<Self> {
         let model = build_model()?;
+        let me = Self {
+            inner: Arc::new(Mutex::new(model)),
+            last_embed_at: Arc::new(AtomicU64::new(now_secs())),
+        };
+
         let recycle_rss_mb: u64 = std::env::var("FASTEMBED_RECYCLE_RSS_MB")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1500);
-        if recycle_rss_mb > 0 {
+        let recycle_idle_secs: u64 = std::env::var("FASTEMBED_RECYCLE_IDLE_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(30);
+
+        if recycle_rss_mb == 0 {
+            tracing::info!("fastembed embedder recycling disabled (FASTEMBED_RECYCLE_RSS_MB=0)");
+        } else {
             tracing::info!(
                 recycle_rss_mb,
-                "fastembed embedder will recycle when RSS exceeds this threshold"
+                recycle_idle_secs,
+                "fastembed embedder will recycle when RSS exceeds threshold AND no embed in last N seconds"
             );
-        } else {
-            tracing::info!("fastembed embedder recycling disabled (FASTEMBED_RECYCLE_RSS_MB=0)");
+            me.spawn_watcher(recycle_rss_mb, recycle_idle_secs);
         }
-        Ok(Self {
-            inner: Arc::new(Mutex::new(model)),
-            recycle_rss_mb,
-            recycling: Arc::new(AtomicBool::new(false)),
-        })
+
+        Ok(me)
     }
 
     /// Embed a single string.
@@ -98,7 +125,7 @@ impl Embedder {
         })
         .await
         .context("fastembed embed task join")?;
-        self.maybe_recycle();
+        self.last_embed_at.store(now_secs(), Ordering::Release);
         out
     }
 
@@ -137,63 +164,78 @@ impl Embedder {
         })
         .await
         .context("fastembed embed_batch task join")?;
-        self.maybe_recycle();
+        self.last_embed_at.store(now_secs(), Ordering::Release);
         out
     }
 
-    /// If process RSS has crossed the recycle threshold and no recycle is
-    /// already running, spawn a background task that builds a fresh
-    /// `TextEmbedding` off-lock and swaps it in. Cheap to call on every embed:
-    /// it's an `/proc` read plus an atomic, and bails immediately when
-    /// recycling is disabled or already in flight.
-    fn maybe_recycle(&self) {
-        if self.recycle_rss_mb == 0 {
-            return;
-        }
-        let Some(rss) = current_rss_mb() else {
-            return;
-        };
-        if rss < self.recycle_rss_mb {
-            return;
-        }
-        // Single-flight: only the task that flips false -> true proceeds.
-        if self
-            .recycling
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
+    /// Background task: every 10 s, check RSS and idle time; recycle if both
+    /// trigger. Single-flight via `AtomicBool` (only one recycle in progress
+    /// at a time, even though under normal conditions the watcher's own tick
+    /// rate already serializes them).
+    fn spawn_watcher(&self, recycle_rss_mb: u64, recycle_idle_secs: u64) {
         let inner = self.inner.clone();
-        let recycling = self.recycling.clone();
-        let threshold = self.recycle_rss_mb;
+        let last_embed_at = self.last_embed_at.clone();
+        let recycling = Arc::new(AtomicBool::new(false));
         tokio::spawn(async move {
-            tracing::info!(
-                rss_mb = rss,
-                threshold_mb = threshold,
-                "fastembed RSS over threshold — recycling embedder"
-            );
-            // Build the replacement WITHOUT holding the lock — embeds keep
-            // running against the old session for the ~0.5-1s this takes.
-            match tokio::task::spawn_blocking(build_model).await {
-                Ok(Ok(fresh)) => {
-                    // Swap holds the lock only for the assignment — it queues
-                    // behind at most one in-flight embed, then returns instantly.
-                    {
-                        let mut guard = inner.lock().await;
-                        *guard = fresh;
+            // Light cadence — we're checking RSS, not driving the recycle.
+            // 10 s gives a recycle a few-tick window to fire once RSS crosses
+            // the line and traffic stays quiet, without spinning.
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+
+                if recycling.load(Ordering::Acquire) {
+                    continue;
+                }
+                let Some(rss) = current_rss_mb() else {
+                    continue; // non-Linux: recycling silently disabled
+                };
+                if rss < recycle_rss_mb {
+                    continue;
+                }
+                let idle = now_secs().saturating_sub(last_embed_at.load(Ordering::Acquire));
+                if idle < recycle_idle_secs {
+                    tracing::debug!(
+                        rss_mb = rss,
+                        idle_secs = idle,
+                        recycle_idle_secs,
+                        "RSS over threshold but embedder is busy — deferring recycle"
+                    );
+                    continue;
+                }
+                if recycling
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
+                    continue;
+                }
+
+                tracing::info!(
+                    rss_mb = rss,
+                    threshold_mb = recycle_rss_mb,
+                    idle_secs = idle,
+                    "fastembed RSS over threshold and quiet — recycling embedder"
+                );
+                let build_res = tokio::task::spawn_blocking(build_model).await;
+                match build_res {
+                    Ok(Ok(fresh)) => {
+                        {
+                            let mut guard = inner.lock().await;
+                            *guard = fresh;
+                        }
+                        let after = current_rss_mb().unwrap_or(0);
+                        tracing::info!(rss_mb = after, "fastembed embedder recycled");
                     }
-                    let after = current_rss_mb().unwrap_or(0);
-                    tracing::info!(rss_mb = after, "fastembed embedder recycled");
+                    Ok(Err(e)) => {
+                        tracing::error!("fastembed recycle: rebuild failed: {e:#}");
+                    }
+                    Err(e) => {
+                        tracing::error!("fastembed recycle: rebuild task join failed: {e}");
+                    }
                 }
-                Ok(Err(e)) => {
-                    tracing::error!("fastembed recycle: rebuild failed: {e:#}");
-                }
-                Err(e) => {
-                    tracing::error!("fastembed recycle: rebuild task join failed: {e}");
-                }
+                recycling.store(false, Ordering::Release);
             }
-            recycling.store(false, Ordering::Release);
         });
     }
 }

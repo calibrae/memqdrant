@@ -139,6 +139,7 @@ Environment:
   PALAZZO_MAX_INGEST_BYTES (default 67108864 = 64 MiB — body cap for POST /ingest; 32KB/item still enforced)
   FASTEMBED_BATCH_CHUNK (default 16 — fastembed sub-batch size; smaller = lower RSS, larger = faster)
   FASTEMBED_RECYCLE_RSS_MB (default 1500 — recycle the embedder when process RSS exceeds this; 0 disables)
+  FASTEMBED_RECYCLE_IDLE_SECS (default 30 — only recycle after this many seconds with no embed activity)
   PALAZZO_USAGE_LOG (default /var/lib/palazzo/usage.jsonl — gain analytics JSONL)
   PALAZZO_GAIN_ENABLED (default 1; set 0/false/no/off to disable per-call recording)
   RUST_LOG      (default palazzo=info)
