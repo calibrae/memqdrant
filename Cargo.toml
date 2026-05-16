@@ -42,3 +42,6 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[patch.crates-io]
+rmcp = { git = "https://github.com/calibrae/rmcp", branch = "feat/auto-accept-sessions" }

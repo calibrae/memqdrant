@@ -506,7 +506,9 @@ async fn run_http(rest: &[String]) -> Result<()> {
 
     let ct = CancellationToken::new();
     let ct_child = ct.child_token();
-    let mut http_config = StreamableHttpServerConfig::default().with_cancellation_token(ct_child);
+    let mut http_config = StreamableHttpServerConfig::default()
+        .with_cancellation_token(ct_child)
+        .with_accept_unknown_sessions(true);
     match std::env::var("PALAZZO_ALLOWED_HOSTS") {
         Ok(raw) if raw.trim() == "*" => {
             tracing::warn!(
