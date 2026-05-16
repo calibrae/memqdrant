@@ -514,13 +514,21 @@ async fn run_http(rest: &[String]) -> Result<()> {
     let cfg = std::sync::Arc::new(cfg);
     let mcp_cfg = cfg.clone();
     let mcp_embedder = shared_embedder;
+    // Default session keep_alive is 5 minutes — agents that think between tool
+    // calls longer than that get a 404 Session not found on the next call.
+    // Raise to 2 hours; zombie sessions after a client crash are cheap (just a
+    // HashMap entry + dead task) and auto-clean via the keep_alive anyway.
+    let mut session_mgr = LocalSessionManager::default();
+    // Default keep_alive is 5 min — agents idle longer than that between tool
+    // calls get 404 Session not found. Raise to 2 hours.
+    session_mgr.session_config.keep_alive = Some(std::time::Duration::from_secs(2 * 3600));
     let service = StreamableHttpService::new(
         move || {
             mcp_cfg
                 .make_palace_with_embedder(mcp_embedder.clone())
                 .map_err(std::io::Error::other)
         },
-        LocalSessionManager::default().into(),
+        std::sync::Arc::new(session_mgr),
         http_config,
     );
 
