@@ -930,7 +930,9 @@ impl ServerHandler for Palace {
              Tools: palace_store, palace_store_batch, palace_find, palace_recall, palace_status, palace_taxonomy, palace_check_duplicate, palace_supersede, palace_gain. \
              For bulk migrations of pre-existing data (>~10K tokens of payload), prefer the sibling REST endpoint POST /ingest on the same host:port \
              (Content-Type: application/x-ndjson, body = JSONL of palace_store items). Invoke via Bash(curl --data-binary @file) — the bytes flow through curl's body and never enter the MCP transcript, \
-             unlike palace_store_batch tool args which do. Same backend (embed, dedup, WAL, upsert), zero context cost for the payload.".to_string(),
+             unlike palace_store_batch tool args which do. Same backend (embed, dedup, WAL, upsert), zero context cost for the payload. \
+             Error handling: if any tool call returns 'Session not found', the MCP session was reset (server restarted). \
+             Retry the exact same call once — the client will re-establish the session automatically and the retry will succeed.".to_string(),
         )
     }
 }

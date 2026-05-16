@@ -15,6 +15,8 @@ compile_error!(
 compile_error!("enable one of the embedding features: `ollama` (default) or `fastembed`.");
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use mcp_gain::Tracker;
@@ -32,7 +34,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::embed::Embedder;
 use crate::mcp::{MAX_STORE_BATCH, Palace, StoreBatchArgs, StoreBatchItem};
-use crate::qdrant::Qdrant;
+use crate::qdrant::{FindFilter, Qdrant};
 use crate::wal::Wal;
 
 fn env_or(key: &str, default: &str) -> String {
@@ -425,6 +427,26 @@ async fn ingest_handler(
         .unwrap()
 }
 
+struct HealthState {
+    qdrant_up: Arc<AtomicBool>,
+}
+
+async fn health_handler(
+    axum::extract::State(state): axum::extract::State<Arc<HealthState>>,
+) -> axum::Json<serde_json::Value> {
+    let qdrant = if state.qdrant_up.load(Ordering::Relaxed) {
+        "up"
+    } else {
+        "down"
+    };
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "qdrant": qdrant,
+        "embedder": "ready",
+    }))
+}
+
 async fn run_stdio() -> Result<()> {
     let cfg = Config::from_env();
     tracing::info!(
@@ -514,14 +536,12 @@ async fn run_http(rest: &[String]) -> Result<()> {
     let cfg = std::sync::Arc::new(cfg);
     let mcp_cfg = cfg.clone();
     let mcp_embedder = shared_embedder;
-    // Default session keep_alive is 5 minutes — agents that think between tool
-    // calls longer than that get a 404 Session not found on the next call.
-    // Raise to 2 hours; zombie sessions after a client crash are cheap (just a
-    // HashMap entry + dead task) and auto-clean via the keep_alive anyway.
+    // Disable the session activity timeout. rmcp's default is 5 min — agents
+    // idle longer than that between tool calls get 404 Session not found.
+    // Zombie sessions from crashed clients are cheap (one idle tokio task + a
+    // HashMap entry) and cleared on the next server restart / deployment.
     let mut session_mgr = LocalSessionManager::default();
-    // Default keep_alive is 5 min — agents idle longer than that between tool
-    // calls get 404 Session not found. Raise to 2 hours.
-    session_mgr.session_config.keep_alive = Some(std::time::Duration::from_secs(2 * 3600));
+    session_mgr.session_config.keep_alive = None;
     let service = StreamableHttpService::new(
         move || {
             mcp_cfg
@@ -538,13 +558,45 @@ async fn run_http(rest: &[String]) -> Result<()> {
         .unwrap_or(64 * 1024 * 1024);
     tracing::info!(max_ingest_bytes = max_ingest, "POST /ingest body cap");
 
+    // Qdrant liveness poller — cached, refreshed every 30 s. /health reads the flag
+    // without touching Qdrant, so the probe is cheap regardless of poll cadence.
+    let qdrant_for_health = cfg.make_qdrant();
+    let qdrant_up = Arc::new(AtomicBool::new(false));
+    {
+        let ok = qdrant_for_health
+            .count(&FindFilter::default())
+            .await
+            .is_ok();
+        qdrant_up.store(ok, Ordering::Relaxed);
+        tracing::info!(qdrant_up = ok, "initial qdrant health check");
+    }
+    {
+        let poller_qdrant = qdrant_for_health;
+        let flag = qdrant_up.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            ticker.tick().await; // skip first immediate tick — already checked above
+            loop {
+                ticker.tick().await;
+                let ok = poller_qdrant.count(&FindFilter::default()).await.is_ok();
+                flag.store(ok, Ordering::Relaxed);
+                tracing::debug!(qdrant_up = ok, "qdrant health poll");
+            }
+        });
+    }
+    let health_state = Arc::new(HealthState { qdrant_up });
+
     let ingest_route = axum::Router::new()
         .route("/ingest", axum::routing::post(ingest_handler))
         .layer(axum::extract::DefaultBodyLimit::max(max_ingest))
         .with_state(ingest_palace);
+    let health_route = axum::Router::new()
+        .route("/health", axum::routing::get(health_handler))
+        .with_state(health_state);
     let router = axum::Router::new()
         .nest_service("/mcp", service)
-        .merge(ingest_route);
+        .merge(ingest_route)
+        .merge(health_route);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .with_context(|| format!("bind {bind}"))?;
