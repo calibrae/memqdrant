@@ -220,6 +220,22 @@ The unit runs as a dedicated `palazzo` user, drops all needless privileges (`Pro
 
 If you expose the service beyond a trusted LAN, put a reverse proxy with TLS + auth (e.g. nginx + basic auth, or an identity-aware proxy) in front of `:6334`. There is no built-in authentication — palazzo assumes a trusted network.
 
+#### Deploy with Docker Compose
+
+`Dockerfile` + `docker-compose.yml` at the repo root deploy the whole stack — palazzo plus, optionally, a bundled Qdrant and/or Ollama:
+
+```
+cp .env.example .env          # pick backend + which services to bundle
+docker compose up -d --build
+```
+
+Two axes, both driven by `.env`:
+
+- **Embedding backend** — `PALAZZO_BACKEND=fastembed` (local ONNX, default) or `ollama` (HTTP to an Ollama server). Baked into the image at build time via the `BACKEND` build arg.
+- **Bundled services** — add `qdrant` to `COMPOSE_PROFILES` to run a Qdrant container, or omit it and point `QDRANT_URL` at an existing instance. An optional `ollama` profile bundles Ollama the same way.
+
+`COMPOSE_PROFILES=qdrant` gives a fully self-contained box (fastembed + Qdrant, zero external dependencies); `COMPOSE_PROFILES=` with `QDRANT_URL` set runs palazzo alone against your existing Qdrant. The WAL, fastembed model cache and usage log persist in the `palazzo-data` volume. palazzo tolerates Qdrant being unreachable at boot, so start order is not constrained.
+
 ## Testing
 
 End-to-end smoke test against a throwaway Qdrant collection:

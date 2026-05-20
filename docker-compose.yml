@@ -1,0 +1,80 @@
+# palazzo full-stack deploy.
+#
+#   cp .env.example .env          # then edit
+#   docker compose up -d --build
+#
+# Two axes of customisation, both driven by .env:
+#
+#   1. Embedding backend (PALAZZO_BACKEND, baked in at image-build time):
+#        fastembed  — local ONNX nomic-embed-text-v1.5-Q. Self-contained.
+#        ollama     — HTTP to an Ollama server.
+#
+#   2. Qdrant (COMPOSE_PROFILES):
+#        profile "qdrant"  — run a bundled Qdrant container.
+#        (omit it)         — use an external Qdrant; point QDRANT_URL at it.
+#
+#   Optional profile "ollama" runs a bundled Ollama alongside (only useful
+#   when PALAZZO_BACKEND=ollama and you don't already have one).
+#
+# palazzo tolerates Qdrant being unreachable at boot, so there is no hard
+# depends_on — start order doesn't matter, the /health poller reports status.
+
+name: palazzo
+
+services:
+  palazzo:
+    build:
+      context: .
+      args:
+        BACKEND: ${PALAZZO_BACKEND:-fastembed}
+    image: palazzo:${PALAZZO_BACKEND:-fastembed}
+    restart: unless-stopped
+    ports:
+      - "${PALAZZO_PORT:-6334}:6334"
+    environment:
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      COLLECTION: ${COLLECTION:-claude-memory}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-nomic-embed-text}
+      PALAZZO_BIND: 0.0.0.0:6334
+      # DNS-rebinding Host-header allowlist. "*" disables the check — fine on a
+      # trusted LAN / behind a reverse proxy. Set an explicit host:port list to lock down.
+      PALAZZO_ALLOWED_HOSTS: ${PALAZZO_ALLOWED_HOSTS:-*}
+      RUST_LOG: ${RUST_LOG:-palazzo=info}
+    volumes:
+      # WAL, fastembed model cache and usage log persist here.
+      - palazzo-data:/var/lib/palazzo
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6334/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+  # Bundled Qdrant — only starts under the "qdrant" profile.
+  # Omit the profile to use an external Qdrant (set QDRANT_URL accordingly).
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_VERSION:-latest}
+    profiles: ["qdrant"]
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  # Bundled Ollama — only starts under the "ollama" profile.
+  # After first start, pull the embedding model once:
+  #   docker compose exec ollama ollama pull nomic-embed-text
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-latest}
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+
+volumes:
+  palazzo-data:
+  qdrant-data:
+  ollama-data:

@@ -5,3 +5,4 @@ resume.sh
 .palazzo/
 .claude/
 .fastembed_cache/
+.env
